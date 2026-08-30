@@ -894,9 +894,7 @@ async function generateContentWithTracking(
       else initialModel = 'gemma-4-26b-a4b-it';
     }
 
-    const candidateModels = (requestParams as any).singleModel
-      ? [initialModel]
-      : [
+    const candidateModels = [
       initialModel,
       initialModel === 'gemma-4-31b-it' ? 'gemma-4-26b-a4b-it' : 'gemma-4-31b-it',
       'gemini-3.7-flash',
@@ -906,42 +904,10 @@ async function generateContentWithTracking(
     ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
     let lastErr: any = null;
 
-    // Hard deadline for this generation chain. Callers may pass an absolute
-    // route-level deadline (params.deadline); otherwise assume a 55s budget so
-    // the chain of slow/hanging model calls can never hit the platform limit.
-    const deadline: number = Number((requestParams as any).deadline) || (start + 55000);
-
     for (const mod of candidateModels) {
-      const remainingBudget = deadline - Date.now();
-      if (remainingBudget < 5000) {
-        console.warn(`generateContentWithTracking: out of time budget, stopping before model ${mod}`);
-        break;
-      }
       try {
-        const attemptParams = { ...requestParams, model: mod } as any;
-        // thinkingConfig is only supported by Gemini models — passing it to a
-        // Gemma model makes the call hang until timeout. Strip it for Gemma.
-        if (mod.startsWith('gemma') && attemptParams.config?.thinkingConfig) {
-          const { thinkingConfig: _strippedThinking, ...restConfig } = attemptParams.config;
-          attemptParams.config = restConfig;
-        }
-        delete attemptParams.deadline;
-        // Per-attempt timeout: a hanging model call must not eat the whole budget
-        // (callers may tighten it via params.perAttemptMs, e.g. for thinking mode)
-        const attemptTimeoutMs = Math.max(5000, Math.min(Number((requestParams as any).perAttemptMs) || 35000, remainingBudget - 2000));
-        let timerRef: any = null;
-        const genPromise: Promise<any> = ai.models.generateContent(attemptParams);
-        genPromise.catch(() => {}); // no unhandled rejection if the timeout wins the race
-        response = await Promise.race([
-          genPromise,
-          new Promise((_, rej) => {
-            timerRef = setTimeout(() => rej(Object.assign(
-              new Error(`Model ${mod} did not respond within ${Math.round(attemptTimeoutMs / 1000)}s`),
-              { status: 504, timedOut: true }
-            )), attemptTimeoutMs);
-          })
-        ]);
-        clearTimeout(timerRef);
+        const attemptParams = { ...requestParams, model: mod };
+        response = await ai.models.generateContent(attemptParams);
         if (response && response.text) {
           success = true;
           break;
@@ -1124,105 +1090,41 @@ function pcmToWav(pcmBuffer: Buffer, sampleRate: number = 24000, numChannels: nu
   return Buffer.concat([header, pcmBuffer]);
 }
 
-// Keyless web search fallback: DuckDuckGo HTML endpoint (no API key required).
-// Used when Tavily is missing/failing so web_search mode keeps working.
-async function fetchDuckDuckGoResults(query: string, maxResults = 8): Promise<any[]> {
-  const res = await fetch("https://html.duckduckgo.com/html/", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      "Accept": "text/html,application/xhtml+xml"
-    },
-    signal: AbortSignal.timeout(12000),
-    body: new URLSearchParams({ q: query, kl: /[\u0600-\u06FF]/.test(query) ? "ar-eg" : "wt-wt" }).toString()
-  });
-  if (!res.ok) throw new Error(`DuckDuckGo HTTP ${res.status}`);
-  const html = await res.text();
-  const results: any[] = [];
-  const linkRe = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-  const snipRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-  const snippets: string[] = [];
-  let sm: RegExpExecArray | null;
-  while ((sm = snipRe.exec(html)) !== null) snippets.push(sm[1].replace(/<[^>]+>/g, "").trim());
-  let lm: RegExpExecArray | null;
-  let idx = 0;
-  while ((lm = linkRe.exec(html)) !== null && results.length < maxResults) {
-    let url = lm[1];
-    const uddg = url.match(/uddg=([^&]+)/);
-    if (uddg) {
-      try { url = decodeURIComponent(uddg[1]); } catch (e) { url = uddg[1]; }
-    }
-    if (!/^https?:\/\//.test(url) || url.includes("duckduckgo.com")) continue;
-    const title = lm[2].replace(/<[^>]+>/g, "").trim();
-    if (!title) continue;
-    const snippet = snippets[idx] || "";
-    idx++;
-    results.push({ title, url, content: snippet });
-  }
-  return results;
-}
-
 async function routeUnderstandingTask({
   task,
   requiredCapabilities,
   contents,
   systemInstruction,
-  userId,
-  deadline,
-  perAttemptMs,
-  modelChain
+  userId
 }: {
   task: string;
   requiredCapabilities: ('text' | 'image' | 'video' | 'audio' | 'pdf' | 'youtube' | 'extraction' | 'summarization')[];
   contents: any[];
   systemInstruction?: string;
   userId?: string;
-  deadline?: number;
-  perAttemptMs?: number;
-  modelChain?: string[];
 }): Promise<{ text: string; modelUsed: string }> {
-  // Callers may pass an explicit model chain (e.g. the audio pipeline uses the
-  // same proven fast chain as web-search synthesis). Otherwise the capability
-  // registry decides, as before.
-  const modelIds: string[] = modelChain && modelChain.length > 0
-    ? modelChain
-    : MODEL_CAPABILITY_REGISTRY
-        .filter(m => m.role === 'understanding' && requiredCapabilities.every(c => m.capabilities.includes(c)))
-        .sort((a, b) => b.priority - a.priority)
-        .map(m => m.id);
-  if (modelIds.length === 0) {
-    modelIds.push(...MODEL_CAPABILITY_REGISTRY.filter(m => m.role === 'understanding').sort((a, b) => b.priority - a.priority).map(m => m.id));
+  const eligibleModels = MODEL_CAPABILITY_REGISTRY
+    .filter(m => m.role === 'understanding' && requiredCapabilities.every(c => m.capabilities.includes(c)))
+    .sort((a, b) => b.priority - a.priority);
+
+  if (eligibleModels.length === 0) {
+    eligibleModels.push(...MODEL_CAPABILITY_REGISTRY.filter(m => m.role === 'understanding').sort((a, b) => b.priority - a.priority));
   }
 
   let lastErr: any = null;
   const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-  for (let i = 0; i < modelIds.length; i++) {
-    const modelId = modelIds[i];
+  for (let i = 0; i < eligibleModels.length; i++) {
+    const modelEntry = eligibleModels[i];
+    const modelId = modelEntry.id;
     const startTime = Date.now();
 
-    // Respect the caller's shared time budget (e.g. the audio pipeline must
-    // leave room for TTS before the 60s serverless limit).
-    if (deadline && Date.now() > deadline - 5000) {
-      console.warn(`[UNDERSTANDING ROUTER] Out of time budget for ${task}, stopping before model ${modelId}`);
-      break;
-    }
-
-    // With a shared deadline, retrying the same model wastes the budget that
-    // other fallback models (and the caller's remaining stages) still need.
-    const maxAttempts = deadline ? 1 : 2;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const response = await generateContentWithTracking({
           model: modelId,
           contents,
-          config: systemInstruction ? { systemInstruction } : undefined,
-          ...(deadline ? { deadline } : {}),
-          ...(perAttemptMs ? { perAttemptMs } : {}),
-          // With an explicit modelChain the OUTER router owns fallbacks — the
-          // tracking call must not silently chain through other models.
-          ...(modelChain ? { singleModel: true } : {})
+          config: systemInstruction ? { systemInstruction } : undefined
         });
 
         if (response && response.text) {
@@ -2227,17 +2129,13 @@ async function generateSpokenScript({
   profile,
   sourceType,
   title,
-  intentType,
-  deadline,
-  modelChain
+  intentType
 }: {
   summaryOrContent: string;
   profile: VoiceProfile;
   sourceType: string;
   title?: string;
   intentType?: string;
-  deadline?: number;
-  modelChain?: string[];
 }): Promise<string> {
   const isQuestions = intentType && ['questions_mcq', 'questions_comprehension', 'questions_review', 'questions_exam', 'questions_general'].includes(intentType);
   const isNotes = intentType === 'audio_notes' || intentType === 'key_points_notes';
@@ -2288,10 +2186,7 @@ ${summaryOrContent}`;
       task: isQuestions ? 'spoken_questions_generation' : isNotes ? 'spoken_notes_generation' : 'spoken_script_generation',
       requiredCapabilities: ['text', 'summarization'],
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      systemInstruction: 'أنت خبير إعداد النصوص الإذاعية والتسجيلات الصوتية التعليمية لمنصة THOTH.',
-      deadline,
-      perAttemptMs: 12000,
-      modelChain
+      systemInstruction: 'أنت خبير إعداد النصوص الإذاعية والتسجيلات الصوتية التعليمية لمنصة THOTH.'
     });
 
     let script = res.text.replace(/[#*`_~>\[\]]/g, '').trim();
@@ -2398,8 +2293,7 @@ async function generateSpeechAudioMultiModel(
 
 async function synthesizeFullAudioScript(
   spokenScript: string,
-  profile: VoiceProfile,
-  deadline?: number
+  profile: VoiceProfile
 ): Promise<{ audioUrl: string; durationSec: number } | null> {
   const cleanScript = cleanTextForTTS(spokenScript);
   if (!cleanScript) return null;
@@ -2446,28 +2340,13 @@ async function synthesizeFullAudioScript(
   }
   if (currentChunk.trim()) chunks.push(currentChunk.trim());
 
-  // Serverless budget guard: sequential TTS of 4 × up-to-20s calls alone could
-  // exceed the 60s function limit (→ 504). Chunks now run IN PARALLEL and the
-  // count adapts to the remaining time budget so the route always responds.
-  const ttsDeadline = deadline || (Date.now() + 45000);
-  const remainingMs = ttsDeadline - Date.now();
-  // One parallel TTS round can take up to ~20s; below 22s there is no safe
-  // window left inside the 60s function limit — return null so the caller
-  // responds with the text-only summary instead of risking a 504.
-  if (remainingMs < 22000) {
-    console.warn('[AUDIO TTS] No time budget left for TTS round — falling back to text-only');
-    return null;
-  }
-  const maxChunks = remainingMs > 35000 ? 3 : remainingMs > 28000 ? 2 : 1;
-  const selectedChunks = chunks.slice(0, maxChunks);
+  // Synthesize first 4 chunks to produce high quality podcast segment
+  const selectedChunks = chunks.slice(0, 4);
   const pcmBuffers: Buffer[] = [];
   const mp3Buffers: Buffer[] = [];
 
-  const chunkResults = await Promise.all(selectedChunks.map((chunk) =>
-    generateSpeechAudioMultiModel(chunk, profile.voiceName).catch(() => null)
-  ));
-
-  for (const chunkRes of chunkResults) {
+  for (const chunk of selectedChunks) {
+    const chunkRes = await generateSpeechAudioMultiModel(chunk, profile.voiceName);
     if (chunkRes && chunkRes.audioBase64) {
       const rawBuf = Buffer.from(chunkRes.audioBase64, 'base64');
       if (chunkRes.mimeType.includes('mp3')) {
@@ -3007,9 +2886,6 @@ User request: "${userQuery}"` }] }],
       // Branch 1: Audio Summary / Audio Notes / Spoken Questions requested
       if (intent.isAudioDelivery) {
         try {
-          // Shared budget for the whole audio pipeline (understanding + script +
-          // parallel TTS) — must stay well inside the 60s serverless limit.
-          const audioDeadline = Date.now() + 50000;
           // Enforce tiered daily audio generation limit with guest restriction
           const creditCheck = await checkDailyAudioCredit(userId, clientIp);
           if (!creditCheck.allowed) {
@@ -3091,10 +2967,7 @@ User request: "${userQuery}"` }] }],
               ? ['pdf', 'summarization'] 
               : ['text', 'summarization'],
             contents: understandingContents,
-            systemInstruction,
-            deadline: audioDeadline,
-            perAttemptMs: 20000,
-            modelChain: ['gemma-4-26b-a4b-it', 'gemma-4-31b-it', 'gemini-3.7-flash']
+            systemInstruction
           });
 
           let rawContent = understandingRes.text || "تم تحليل المحتوى بنجاح.";
@@ -3114,9 +2987,7 @@ User request: "${userQuery}"` }] }],
                   { role: 'model', parts: [{ text: rawContent }] },
                   { role: 'user', parts: [{ text: correctivePrompt }] }
                 ],
-                systemInstruction,
-                deadline: audioDeadline,
-                perAttemptMs: 15000
+                systemInstruction
               });
               if (retryRes && retryRes.text && retryRes.text.trim().length > 30) {
                 rawContent = retryRes.text;
@@ -3126,19 +2997,17 @@ User request: "${userQuery}"` }] }],
             }
           }
 
-          // 3. Spoken Script Generation (respects the shared audio budget)
+          // 3. Spoken Script Generation
           const spokenScript = await generateSpokenScript({
             summaryOrContent: rawContent,
             profile: intent.voiceProfile,
             sourceType: intent.sourceType,
             title: sourceTitle,
-            intentType: intent.intentType,
-            deadline: audioDeadline,
-            modelChain: ['gemma-4-26b-a4b-it', 'gemini-3.1-flash-lite']
+            intentType: intent.intentType
           });
 
-          // 4. Multi-Model TTS Synthesis (parallel chunks, budget-aware)
-          const audioResult = await synthesizeFullAudioScript(spokenScript, intent.voiceProfile, audioDeadline);
+          // 4. Multi-Model TTS Synthesis
+          const audioResult = await synthesizeFullAudioScript(spokenScript, intent.voiceProfile);
 
           if (audioResult && audioResult.audioUrl) {
             await recordSuccessfulDailyAudioCredit(userId, clientIp);
@@ -3330,11 +3199,6 @@ User request: "${userQuery}"` }] }],
       if (mode === 'web_search') {
         const dbKeys = await getDbApiKeys();
         const tavilyApiKey = (typeof dbKeys.tavilyApiKey === 'string' ? dbKeys.tavilyApiKey.trim() : "");
-        // One shared deadline for the whole search pipeline (Tavily + all model calls)
-        const searchDeadline = Date.now() + 55000;
-        // Lightweight diagnostics: included in the response ONLY when the search
-        // pipeline fails, so failures can be diagnosed from production directly.
-        const searchDebug: any = { tavilyKeyPresent: Boolean(tavilyApiKey) };
 
         let primarySources: any[] = [];
         let relatedSources: any[] = [];
@@ -3350,15 +3214,14 @@ User request: "${userQuery}"` }] }],
               headers: {
                 "Content-Type": "application/json"
               },
-              signal: AbortSignal.timeout(20000), // a hanging Tavily call must not eat the function budget
               body: JSON.stringify({
                 api_key: tavilyApiKey,
                 query: userQuery,
-                search_depth: "basic", // basic: ~2-3x faster than advanced; keeps the pipeline within the 60s function budget
+                search_depth: "advanced",
                 include_images: true,
                 include_image_descriptions: true,
                 include_answer: false,
-                max_results: 6,
+                max_results: 8,
                 topic: "general"
               })
             });
@@ -3367,8 +3230,6 @@ User request: "${userQuery}"` }] }],
               const searchData = await safeFetchJson(tavilyRes, {});
               const rawResults = searchData.results || [];
               const rawImages = searchData.images || [];
-              searchDebug.tavilyStatus = 200;
-              searchDebug.tavilyResults = rawResults.length;
 
               if (rawResults.length > 0) {
                 const allSources = rawResults.map((item: any, idx: number) => {
@@ -3427,7 +3288,7 @@ User request: "${userQuery}"` }] }],
 العنوان: ${s.title}
 الرابط: ${s.url}
 الملخص/المحتوى:
-${(s.snippet || '').slice(0, 700)}`
+${s.snippet}`
                 ).join("\n\n---\n\n");
 
                 const promptForAi = `سؤال المستخدم: "${userQuery}"
@@ -3447,20 +3308,12 @@ ${sourcesPromptContext}
                   systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ ومباشر ومختصر. لا تقدم أي معلومات عن تفاصيل تطويرك إلا إذا سُئلت صراحة. إذا سأل المستخدم عن صاحب المنصة أو المطور، أجب فقط 'مطور مصري'. إذا ألح لمعرفة اسمه، قل 'أحمد أشرف حمزة محمد'. إذا سأل عن البلد، قل 'مصر'، وإذا سأل من أين في مصر، قل 'أسيوط'. لا تذكر هذه التفاصيل بدون سبب أو سؤال مباشر. لا تخمن اسم المستخدم ولا تناده باسمك. لا تذكر أي اسم نموذج أو شركة أخرى إطلاقاً. أجب مستنداً حصراً إلى نتائج البحث المتاحة مع وضع ترقيم الاقتباسات [1]، [2] بدقة بالغة داخل الفقرات. معلومة إضافية (لا تذكرها إلا إذا سُئلت عنها): الشركة الأم لـ THOTH هي 'TIDEIN'، شركة تقنية ناشئة مصرية تأسست عام 2026 وتعمل عالمياً في مجالات الذكاء الاصطناعي والتطبيقات والألعاب والتجارة الإلكترونية."
                 };
 
-                // Fastest proven model first for synthesis — the remaining time
-                // budget after Tavily must cover a full formatted answer.
-                for (const m of ['gemma-4-26b-a4b-it', 'gemma-4-31b-it', 'gemini-3.7-flash']) {
-                  if (Date.now() > searchDeadline - 5000) {
-                    console.warn('web_search: out of time budget, stopping before model', m);
-                    break;
-                  }
+                for (const m of [primaryModel, secondaryModel, tertiaryModel]) {
                   try {
                     const aiResponse = await generateContentWithTracking({
                       model: m,
                       contents: [{ role: 'user', parts: [{ text: promptForAi }] }],
-                      config: searchGenConfig,
-                      deadline: searchDeadline,
-                      perAttemptMs: 15000
+                      config: searchGenConfig
                     });
 
                     if (aiResponse && aiResponse.text) {
@@ -3475,95 +3328,23 @@ ${sourcesPromptContext}
               }
             } else {
               console.warn("Tavily API responded with error status:", tavilyRes.status);
-              searchDebug.tavilyStatus = tavilyRes.status;
             }
-          } catch (tavilyErr: any) {
+          } catch (tavilyErr) {
             console.warn("Tavily search execution failed, falling back to Google Search Grounding:", tavilyErr);
-            searchDebug.tavilyErr = tavilyErr?.message || String(tavilyErr);
-          }
-        }
-
-        // Keyless fallback: DuckDuckGo HTML search — keeps web_search working even
-        // when Tavily is missing/failing and before spending the grounding attempt.
-        if (!aiResultText && primarySources.length === 0) {
-          try {
-            const ddgResults = await fetchDuckDuckGoResults(userQuery, 8);
-            searchDebug.ddgResults = ddgResults.length;
-            if (ddgResults.length > 0) {
-              const allSources = ddgResults.map((item: any, idx: number) => {
-                let domain = "web";
-                try { domain = new URL(item.url).hostname.replace(/^www\./, ""); } catch (e) { domain = "web"; }
-                return {
-                  id: idx + 1,
-                  title: item.title || domain,
-                  url: item.url,
-                  domain: domain,
-                  snippet: item.content || "",
-                  publishedDate: "",
-                  favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=64`,
-                  score: 0.5
-                };
-              });
-              primarySources = allSources.slice(0, 4);
-              relatedSources = allSources.slice(4, 8);
-              modelUsed = "DuckDuckGo Web Search";
-
-              const ddgSourcesContext = primarySources.map((s: any) =>
-                `[المصدر ${s.id}]\nالموقع/الدومين: ${s.domain}\nالعنوان: ${s.title}\nالرابط: ${s.url}\nالملخص/المحتوى:\n${(s.snippet || '').slice(0, 700)}`
-              ).join("\n\n---\n\n");
-              const ddgPrompt = `سؤال المستخدم: "${userQuery}"\n\nإليك نتائج البحث المباشرة من الويب:\n\n${ddgSourcesContext}\n\nالمطلوب بصفتك مساعد THOTH الذكي:\n1. صغ إجابة كاملة ودقيقة بنفس لغة المستخدم تشرح وتجيب على سؤال المستخدم بناءً على المعلومات المتاحة في المصادر أعلاه فقط.\n2. اربط كل معلومة برقم المصدر المناسب في النص كـ [1]، [2]، [3] في المكان الذي أخذت منه المعلومة.\n3. لا تبتكر أو تخترع معلومات غير موجودة في نتائج البحث أعلاه.\n4. إذا وجدت تعارضاً بين المصادر، يرجى الإشارة إليه بوضوح وأمانة.\n5. نسق الإجابة بأسلوب أنيق باستخدام العناوين الفرعية والنقاط المنظمة.`;
-
-              for (const m of ['gemma-4-26b-a4b-it', 'gemma-4-31b-it', 'gemini-3.7-flash']) {
-                if (Date.now() > searchDeadline - 5000) {
-                  console.warn('web_search DDG: out of time budget, stopping before model', m);
-                  break;
-                }
-                try {
-                  const aiResponse = await generateContentWithTracking({
-                    model: m,
-                    contents: [{ role: 'user', parts: [{ text: ddgPrompt }] }],
-                    config: {
-                      systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ ومباشر ومختصر. لا تقدم أي معلومات عن تفاصيل تطويرك إلا إذا سُئلت صراحة. أجب مستنداً حصراً إلى نتائج البحث المتاحة مع وضع ترقيم الاقتباسات [1]، [2] بدقة بالغة داخل الفقرات."
-                    },
-                    deadline: searchDeadline,
-                    perAttemptMs: 15000
-                  });
-                  if (aiResponse && aiResponse.text) {
-                    aiResultText = aiResponse.text;
-                    modelUsed = m;
-                    break;
-                  }
-                } catch (err: any) {
-                  console.warn(`DDG synthesis model ${m} failed:`, err?.message || err);
-                }
-              }
-            }
-          } catch (ddgErr: any) {
-            console.warn("DuckDuckGo keyless search failed:", ddgErr);
-            searchDebug.ddgErr = ddgErr?.message || String(ddgErr);
           }
         }
 
         // Fallback to Google Search Grounding with Gemini if Tavily was not available or returned no results
-        // (single direct attempt — the multi-model fallback chain must NOT receive
-        //  the googleSearch tool since Gemma models reject it outright)
         if (!aiResultText) {
           try {
-            if (!ai) await refreshAiClient();
-            if (ai) {
-              const groundedPromise: Promise<any> = ai.models.generateContent({
-                model: "gemini-3.1-flash-lite",
-                contents: [{ role: 'user', parts: [{ text: userQuery }] }],
-                config: {
-                  systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ وموثوق ومفصل بناءً على أحدث معلومات الويب والبحث المباشر. لا تذكر اسم أي شركة أو نموذج آخر.",
-                  tools: [{ googleSearch: {} }]
-                }
-              });
-              groundedPromise.catch(() => {});
-              const googleSearchRes: any = await Promise.race([
-                groundedPromise,
-                new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error("Grounding did not respond within 15s"), { status: 504 })), 15000))
-              ]);
+            const googleSearchRes = await generateContentWithTracking({
+              model: "gemini-3.1-flash-lite",
+              contents: [{ role: 'user', parts: [{ text: userQuery }] }],
+              config: {
+                systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ وموثوق ومفصل بناءً على أحدث معلومات الويب والبحث المباشر. لا تذكر اسم أي شركة أو نموذج آخر.",
+                tools: [{ googleSearch: {} }]
+              }
+            });
 
             if (googleSearchRes && googleSearchRes.text) {
               aiResultText = googleSearchRes.text;
@@ -3597,14 +3378,11 @@ ${sourcesPromptContext}
               primarySources = rawGoogleSources.slice(0, 4);
               relatedSources = rawGoogleSources.slice(4, 8);
             }
-            } // end if (ai)
-          } catch (googleErr: any) {
+          } catch (googleErr) {
             console.error("Google Search Grounding fallback failed:", googleErr);
-            searchDebug.groundingErr = googleErr?.message || String(googleErr);
           }
         }
 
-        const searchFailed = !aiResultText;
         if (!aiResultText) {
           aiResultText = "عذراً، تعذر إجراء البحث في الويب حالياً. يرجى التأكد من مفتاح البحث أو إعادة المحاولة لاحقاً.";
         }
@@ -3614,18 +3392,15 @@ ${sourcesPromptContext}
           modelUsed: modelUsed,
           sources: primarySources,
           relatedSources: relatedSources,
-          images: processedImages,
-          ...(searchFailed ? { searchDebug } : {})
+          images: processedImages
         });
       }
 
       if (mode === 'thinking') {
-        // Real "thinking" semantics: a Gemini thinking-capable model first.
-        // (Gemma models do not support thinkingConfig — passing it hangs the call.)
         genConfig.thinkingConfig = { thinkingLevel: "HIGH" };
-        primaryModel = "gemini-3.7-flash";
-        secondaryModel = "gemma-4-31b-it";
-        tertiaryModel = "gemma-4-26b-a4b-it";
+        primaryModel = "gemma-4-31b-it";
+        secondaryModel = "gemma-4-26b-a4b-it";
+        tertiaryModel = "gemini-3.7-flash";
       } else if (mode === 'fast') {
         primaryModel = "gemma-4-26b-a4b-it";
         secondaryModel = "gemma-4-31b-it";
@@ -3640,16 +3415,9 @@ ${sourcesPromptContext}
       // Helper function to try generating content with fallback models and retry on 429 / 503
       const tryGenerate = async (models: string[]) => {
         let lastError: any = null;
-        // Hard deadline for the whole model chain: the response must complete
-        // within the serverless function time limit (60s on this plan).
-        const chatDeadline = Date.now() + 55000;
         // Prioritize Gemma 4 26B as the immediate limit fallback
         const candidateModelList = [...new Set([...models, 'gemma-4-26b-a4b-it', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview'])];
         for (const model of candidateModelList) {
-          if (Date.now() > chatDeadline - 5000) {
-            console.warn('tryGenerate: out of time budget, stopping before model', model);
-            break;
-          }
           // If fallback model is 26B when 31B hit limits, try directly
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
@@ -3658,11 +3426,7 @@ ${sourcesPromptContext}
               const response = await generateContentWithTracking({
                 model,
                 contents: normalized,
-                config: currentConfig,
-                deadline: chatDeadline,
-                // Thinking models vary widely (26-50s+): cap the first attempt so
-                // the fast Gemma fallbacks always keep enough budget to answer.
-                perAttemptMs: mode === 'thinking' ? 30000 : undefined
+                config: currentConfig
               });
               if (response && response.text) {
                 const usedName = model.includes('31b') ? "Gemma 4 31B" : model.includes('26b') ? "Gemma 4 26B" : "Gemma 4 26B";
@@ -3771,18 +3535,14 @@ ${sourcesPromptContext}
         res.json(result);
       } catch (err: any) {
         console.error("All AI model attempts failed:", err?.message || err);
-        // Honest server error (503): the frontend shows it as a server-error box —
-        // never fake a "usage limit" message for internal failures.
-        res.status(503).json({
-          error: true,
-          code: 'AI_SERVICE_ERROR',
-          text: "عذراً، تعذر إكمال طلب الذكاء الاصطناعي الآن بسبب خطأ في خدمة النماذج. يرجى إعادة المحاولة بعد لحظات.",
-          debug: err?.message || String(err)
+        res.json({ 
+          text: "عذراً، وصل استخدام الذكاء الاصطناعي إلى الحد المؤقت المسموح به. يرجى الانتظار بضع ثوانٍ وإعادة إرسال الرسالة.",
+          error: true, debug: err?.message || String(err)
         });
       }
     } catch (error: any) {
       console.error("Error generating response:", error);
-      res.status(500).json({ error: true, code: 'AI_INTERNAL_ERROR', text: "عذراً، حدث خطأ مؤقت أثناء الاتصال بالذكاء الاصطناعي. يرجى إعادة المحاولة." });
+      res.json({ text: "عذراً، حدث خطأ مؤقت أثناء الاتصال بالذكاء الاصطناعي. يرجى إعادة المحاولة.", error: true });
     }
   });
 

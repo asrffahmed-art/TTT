@@ -1266,35 +1266,10 @@ async function startServer() {
         "gemini-3.1-pro-preview"
       ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
       let lastErr = null;
-      const deadline = Number(requestParams.deadline) || start + 55e3;
       for (const mod of candidateModels) {
-        const remainingBudget = deadline - Date.now();
-        if (remainingBudget < 5e3) {
-          console.warn(`generateContentWithTracking: out of time budget, stopping before model ${mod}`);
-          break;
-        }
         try {
           const attemptParams = { ...requestParams, model: mod };
-          if (mod.startsWith("gemma") && attemptParams.config?.thinkingConfig) {
-            const { thinkingConfig: _strippedThinking, ...restConfig } = attemptParams.config;
-            attemptParams.config = restConfig;
-          }
-          delete attemptParams.deadline;
-          const attemptTimeoutMs = Math.max(5e3, Math.min(Number(requestParams.perAttemptMs) || 35e3, remainingBudget - 2e3));
-          let timerRef = null;
-          const genPromise = ai.models.generateContent(attemptParams);
-          genPromise.catch(() => {
-          });
-          response = await Promise.race([
-            genPromise,
-            new Promise((_, rej) => {
-              timerRef = setTimeout(() => rej(Object.assign(
-                new Error(`Model ${mod} did not respond within ${Math.round(attemptTimeoutMs / 1e3)}s`),
-                { status: 504, timedOut: true }
-              )), attemptTimeoutMs);
-            })
-          ]);
-          clearTimeout(timerRef);
+          response = await ai.models.generateContent(attemptParams);
           if (response && response.text) {
             success = true;
             break;
@@ -3111,7 +3086,6 @@ ${specializedPrompt}`;
       if (mode === "web_search") {
         const dbKeys = await getDbApiKeys();
         const tavilyApiKey = typeof dbKeys.tavilyApiKey === "string" ? dbKeys.tavilyApiKey.trim() : "";
-        const searchDeadline = Date.now() + 55e3;
         let primarySources = [];
         let relatedSources = [];
         let processedImages = [];
@@ -3124,17 +3098,14 @@ ${specializedPrompt}`;
               headers: {
                 "Content-Type": "application/json"
               },
-              signal: AbortSignal.timeout(2e4),
-              // a hanging Tavily call must not eat the function budget
               body: JSON.stringify({
                 api_key: tavilyApiKey,
                 query: userQuery,
-                search_depth: "basic",
-                // basic: ~2-3x faster than advanced; keeps the pipeline within the 60s function budget
+                search_depth: "advanced",
                 include_images: true,
                 include_image_descriptions: true,
                 include_answer: false,
-                max_results: 6,
+                max_results: 8,
                 topic: "general"
               })
             });
@@ -3192,7 +3163,7 @@ ${specializedPrompt}`;
 \u0627\u0644\u0639\u0646\u0648\u0627\u0646: ${s.title}
 \u0627\u0644\u0631\u0627\u0628\u0637: ${s.url}
 \u0627\u0644\u0645\u0644\u062E\u0635/\u0627\u0644\u0645\u062D\u062A\u0648\u0649:
-${(s.snippet || "").slice(0, 700)}`
+${s.snippet}`
                 ).join("\n\n---\n\n");
                 const promptForAi = `\u0633\u0624\u0627\u0644 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645: "${userQuery}"
 
@@ -3209,17 +3180,12 @@ ${sourcesPromptContext}
                 const searchGenConfig = {
                   systemInstruction: "\u0623\u0646\u062A THOTH\u060C \u0627\u0644\u0645\u0633\u0627\u0639\u062F \u0627\u0644\u0630\u0643\u064A \u0644\u0645\u0646\u0635\u0629 THOTH. \u0623\u062C\u0628 \u0628\u0646\u0641\u0633 \u0644\u063A\u0629 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 \u0628\u0623\u0633\u0644\u0648\u0628 \u0631\u0627\u0642\u064D \u0648\u0645\u0628\u0627\u0634\u0631 \u0648\u0645\u062E\u062A\u0635\u0631. \u0644\u0627 \u062A\u0642\u062F\u0645 \u0623\u064A \u0645\u0639\u0644\u0648\u0645\u0627\u062A \u0639\u0646 \u062A\u0641\u0627\u0635\u064A\u0644 \u062A\u0637\u0648\u064A\u0631\u0643 \u0625\u0644\u0627 \u0625\u0630\u0627 \u0633\u064F\u0626\u0644\u062A \u0635\u0631\u0627\u062D\u0629. \u0625\u0630\u0627 \u0633\u0623\u0644 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 \u0639\u0646 \u0635\u0627\u062D\u0628 \u0627\u0644\u0645\u0646\u0635\u0629 \u0623\u0648 \u0627\u0644\u0645\u0637\u0648\u0631\u060C \u0623\u062C\u0628 \u0641\u0642\u0637 '\u0645\u0637\u0648\u0631 \u0645\u0635\u0631\u064A'. \u0625\u0630\u0627 \u0623\u0644\u062D \u0644\u0645\u0639\u0631\u0641\u0629 \u0627\u0633\u0645\u0647\u060C \u0642\u0644 '\u0623\u062D\u0645\u062F \u0623\u0634\u0631\u0641 \u062D\u0645\u0632\u0629 \u0645\u062D\u0645\u062F'. \u0625\u0630\u0627 \u0633\u0623\u0644 \u0639\u0646 \u0627\u0644\u0628\u0644\u062F\u060C \u0642\u0644 '\u0645\u0635\u0631'\u060C \u0648\u0625\u0630\u0627 \u0633\u0623\u0644 \u0645\u0646 \u0623\u064A\u0646 \u0641\u064A \u0645\u0635\u0631\u060C \u0642\u0644 '\u0623\u0633\u064A\u0648\u0637'. \u0644\u0627 \u062A\u0630\u0643\u0631 \u0647\u0630\u0647 \u0627\u0644\u062A\u0641\u0627\u0635\u064A\u0644 \u0628\u062F\u0648\u0646 \u0633\u0628\u0628 \u0623\u0648 \u0633\u0624\u0627\u0644 \u0645\u0628\u0627\u0634\u0631. \u0644\u0627 \u062A\u062E\u0645\u0646 \u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 \u0648\u0644\u0627 \u062A\u0646\u0627\u062F\u0647 \u0628\u0627\u0633\u0645\u0643. \u0644\u0627 \u062A\u0630\u0643\u0631 \u0623\u064A \u0627\u0633\u0645 \u0646\u0645\u0648\u0630\u062C \u0623\u0648 \u0634\u0631\u0643\u0629 \u0623\u062E\u0631\u0649 \u0625\u0637\u0644\u0627\u0642\u0627\u064B. \u0623\u062C\u0628 \u0645\u0633\u062A\u0646\u062F\u0627\u064B \u062D\u0635\u0631\u0627\u064B \u0625\u0644\u0649 \u0646\u062A\u0627\u0626\u062C \u0627\u0644\u0628\u062D\u062B \u0627\u0644\u0645\u062A\u0627\u062D\u0629 \u0645\u0639 \u0648\u0636\u0639 \u062A\u0631\u0642\u064A\u0645 \u0627\u0644\u0627\u0642\u062A\u0628\u0627\u0633\u0627\u062A [1]\u060C [2] \u0628\u062F\u0642\u0629 \u0628\u0627\u0644\u063A\u0629 \u062F\u0627\u062E\u0644 \u0627\u0644\u0641\u0642\u0631\u0627\u062A. \u0645\u0639\u0644\u0648\u0645\u0629 \u0625\u0636\u0627\u0641\u064A\u0629 (\u0644\u0627 \u062A\u0630\u0643\u0631\u0647\u0627 \u0625\u0644\u0627 \u0625\u0630\u0627 \u0633\u064F\u0626\u0644\u062A \u0639\u0646\u0647\u0627): \u0627\u0644\u0634\u0631\u0643\u0629 \u0627\u0644\u0623\u0645 \u0644\u0640 THOTH \u0647\u064A 'TIDEIN'\u060C \u0634\u0631\u0643\u0629 \u062A\u0642\u0646\u064A\u0629 \u0646\u0627\u0634\u0626\u0629 \u0645\u0635\u0631\u064A\u0629 \u062A\u0623\u0633\u0633\u062A \u0639\u0627\u0645 2026 \u0648\u062A\u0639\u0645\u0644 \u0639\u0627\u0644\u0645\u064A\u0627\u064B \u0641\u064A \u0645\u062C\u0627\u0644\u0627\u062A \u0627\u0644\u0630\u0643\u0627\u0621 \u0627\u0644\u0627\u0635\u0637\u0646\u0627\u0639\u064A \u0648\u0627\u0644\u062A\u0637\u0628\u064A\u0642\u0627\u062A \u0648\u0627\u0644\u0623\u0644\u0639\u0627\u0628 \u0648\u0627\u0644\u062A\u062C\u0627\u0631\u0629 \u0627\u0644\u0625\u0644\u0643\u062A\u0631\u0648\u0646\u064A\u0629."
                 };
-                for (const m of ["gemma-4-26b-a4b-it", "gemma-4-31b-it", "gemini-3.7-flash"]) {
-                  if (Date.now() > searchDeadline - 5e3) {
-                    console.warn("web_search: out of time budget, stopping before model", m);
-                    break;
-                  }
+                for (const m of [primaryModel, secondaryModel, tertiaryModel]) {
                   try {
                     const aiResponse = await generateContentWithTracking({
                       model: m,
                       contents: [{ role: "user", parts: [{ text: promptForAi }] }],
-                      config: searchGenConfig,
-                      deadline: searchDeadline
+                      config: searchGenConfig
                     });
                     if (aiResponse && aiResponse.text) {
                       aiResultText = aiResponse.text;
@@ -3246,8 +3212,7 @@ ${sourcesPromptContext}
               config: {
                 systemInstruction: "\u0623\u0646\u062A THOTH\u060C \u0627\u0644\u0645\u0633\u0627\u0639\u062F \u0627\u0644\u0630\u0643\u064A \u0644\u0645\u0646\u0635\u0629 THOTH. \u0623\u062C\u0628 \u0628\u0646\u0641\u0633 \u0644\u063A\u0629 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 \u0628\u0623\u0633\u0644\u0648\u0628 \u0631\u0627\u0642\u064D \u0648\u0645\u0648\u062B\u0648\u0642 \u0648\u0645\u0641\u0635\u0644 \u0628\u0646\u0627\u0621\u064B \u0639\u0644\u0649 \u0623\u062D\u062F\u062B \u0645\u0639\u0644\u0648\u0645\u0627\u062A \u0627\u0644\u0648\u064A\u0628 \u0648\u0627\u0644\u0628\u062D\u062B \u0627\u0644\u0645\u0628\u0627\u0634\u0631. \u0644\u0627 \u062A\u0630\u0643\u0631 \u0627\u0633\u0645 \u0623\u064A \u0634\u0631\u0643\u0629 \u0623\u0648 \u0646\u0645\u0648\u0630\u062C \u0622\u062E\u0631.",
                 tools: [{ googleSearch: {} }]
-              },
-              deadline: searchDeadline
+              }
             });
             if (googleSearchRes && googleSearchRes.text) {
               aiResultText = googleSearchRes.text;
@@ -3294,9 +3259,9 @@ ${sourcesPromptContext}
       }
       if (mode === "thinking") {
         genConfig.thinkingConfig = { thinkingLevel: "HIGH" };
-        primaryModel = "gemini-3.7-flash";
-        secondaryModel = "gemma-4-31b-it";
-        tertiaryModel = "gemma-4-26b-a4b-it";
+        primaryModel = "gemma-4-31b-it";
+        secondaryModel = "gemma-4-26b-a4b-it";
+        tertiaryModel = "gemini-3.7-flash";
       } else if (mode === "fast") {
         primaryModel = "gemma-4-26b-a4b-it";
         secondaryModel = "gemma-4-31b-it";
@@ -3308,24 +3273,15 @@ ${sourcesPromptContext}
       }
       const tryGenerate = async (models) => {
         let lastError = null;
-        const chatDeadline = Date.now() + 55e3;
         const candidateModelList = [.../* @__PURE__ */ new Set([...models, "gemma-4-26b-a4b-it", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"])];
         for (const model of candidateModelList) {
-          if (Date.now() > chatDeadline - 5e3) {
-            console.warn("tryGenerate: out of time budget, stopping before model", model);
-            break;
-          }
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
               const currentConfig = { ...genConfig };
               const response = await generateContentWithTracking({
                 model,
                 contents: normalized,
-                config: currentConfig,
-                deadline: chatDeadline,
-                // Thinking models vary widely (26-50s+): cap the first attempt so
-                // the fast Gemma fallbacks always keep enough budget to answer.
-                perAttemptMs: mode === "thinking" ? 3e4 : void 0
+                config: currentConfig
               });
               if (response && response.text) {
                 const usedName = model.includes("31b") ? "Gemma 4 31B" : model.includes("26b") ? "Gemma 4 26B" : "Gemma 4 26B";
@@ -3425,16 +3381,15 @@ ${sourcesPromptContext}
         res.json(result);
       } catch (err) {
         console.error("All AI model attempts failed:", err?.message || err);
-        res.status(503).json({
+        res.json({
+          text: "\u0639\u0630\u0631\u0627\u064B\u060C \u0648\u0635\u0644 \u0627\u0633\u062A\u062E\u062F\u0627\u0645 \u0627\u0644\u0630\u0643\u0627\u0621 \u0627\u0644\u0627\u0635\u0637\u0646\u0627\u0639\u064A \u0625\u0644\u0649 \u0627\u0644\u062D\u062F \u0627\u0644\u0645\u0624\u0642\u062A \u0627\u0644\u0645\u0633\u0645\u0648\u062D \u0628\u0647. \u064A\u0631\u062C\u0649 \u0627\u0644\u0627\u0646\u062A\u0638\u0627\u0631 \u0628\u0636\u0639 \u062B\u0648\u0627\u0646\u064D \u0648\u0625\u0639\u0627\u062F\u0629 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0631\u0633\u0627\u0644\u0629.",
           error: true,
-          code: "AI_SERVICE_ERROR",
-          text: "\u0639\u0630\u0631\u0627\u064B\u060C \u062A\u0639\u0630\u0631 \u0625\u0643\u0645\u0627\u0644 \u0637\u0644\u0628 \u0627\u0644\u0630\u0643\u0627\u0621 \u0627\u0644\u0627\u0635\u0637\u0646\u0627\u0639\u064A \u0627\u0644\u0622\u0646 \u0628\u0633\u0628\u0628 \u062E\u0637\u0623 \u0641\u064A \u062E\u062F\u0645\u0629 \u0627\u0644\u0646\u0645\u0627\u0630\u062C. \u064A\u0631\u062C\u0649 \u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629 \u0628\u0639\u062F \u0644\u062D\u0638\u0627\u062A.",
           debug: err?.message || String(err)
         });
       }
     } catch (error) {
       console.error("Error generating response:", error);
-      res.status(500).json({ error: true, code: "AI_INTERNAL_ERROR", text: "\u0639\u0630\u0631\u0627\u064B\u060C \u062D\u062F\u062B \u062E\u0637\u0623 \u0645\u0624\u0642\u062A \u0623\u062B\u0646\u0627\u0621 \u0627\u0644\u0627\u062A\u0635\u0627\u0644 \u0628\u0627\u0644\u0630\u0643\u0627\u0621 \u0627\u0644\u0627\u0635\u0637\u0646\u0627\u0639\u064A. \u064A\u0631\u062C\u0649 \u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629." });
+      res.json({ text: "\u0639\u0630\u0631\u0627\u064B\u060C \u062D\u062F\u062B \u062E\u0637\u0623 \u0645\u0624\u0642\u062A \u0623\u062B\u0646\u0627\u0621 \u0627\u0644\u0627\u062A\u0635\u0627\u0644 \u0628\u0627\u0644\u0630\u0643\u0627\u0621 \u0627\u0644\u0627\u0635\u0637\u0646\u0627\u0639\u064A. \u064A\u0631\u062C\u0649 \u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629.", error: true });
     }
   });
   async function generateGeminiSpeechAudio(text, voiceName = "Aoede") {
