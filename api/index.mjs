@@ -1280,7 +1280,7 @@ async function startServer() {
             attemptParams.config = restConfig;
           }
           delete attemptParams.deadline;
-          const attemptTimeoutMs = Math.max(5e3, Math.min(35e3, remainingBudget - 2e3));
+          const attemptTimeoutMs = Math.max(5e3, Math.min(Number(requestParams.perAttemptMs) || 35e3, remainingBudget - 2e3));
           let timerRef = null;
           const genPromise = ai.models.generateContent(attemptParams);
           genPromise.catch(() => {
@@ -3322,7 +3322,10 @@ ${sourcesPromptContext}
                 model,
                 contents: normalized,
                 config: currentConfig,
-                deadline: chatDeadline
+                deadline: chatDeadline,
+                // Thinking models vary widely (26-50s+): cap the first attempt so
+                // the fast Gemma fallbacks always keep enough budget to answer.
+                perAttemptMs: mode === "thinking" ? 3e4 : void 0
               });
               if (response && response.text) {
                 const usedName = model.includes("31b") ? "Gemma 4 31B" : model.includes("26b") ? "Gemma 4 26B" : "Gemma 4 26B";

@@ -925,7 +925,8 @@ async function generateContentWithTracking(
         }
         delete attemptParams.deadline;
         // Per-attempt timeout: a hanging model call must not eat the whole budget
-        const attemptTimeoutMs = Math.max(5000, Math.min(35000, remainingBudget - 2000));
+        // (callers may tighten it via params.perAttemptMs, e.g. for thinking mode)
+        const attemptTimeoutMs = Math.max(5000, Math.min(Number((requestParams as any).perAttemptMs) || 35000, remainingBudget - 2000));
         let timerRef: any = null;
         const genPromise: Promise<any> = ai.models.generateContent(attemptParams);
         genPromise.catch(() => {}); // no unhandled rejection if the timeout wins the race
@@ -3478,7 +3479,10 @@ ${sourcesPromptContext}
                 model,
                 contents: normalized,
                 config: currentConfig,
-                deadline: chatDeadline
+                deadline: chatDeadline,
+                // Thinking models vary widely (26-50s+): cap the first attempt so
+                // the fast Gemma fallbacks always keep enough budget to answer.
+                perAttemptMs: mode === 'thinking' ? 30000 : undefined
               });
               if (response && response.text) {
                 const usedName = model.includes('31b') ? "Gemma 4 31B" : model.includes('26b') ? "Gemma 4 26B" : "Gemma 4 26B";
