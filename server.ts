@@ -3436,7 +3436,8 @@ ${sourcesPromptContext}
                       model: m,
                       contents: [{ role: 'user', parts: [{ text: promptForAi }] }],
                       config: searchGenConfig,
-                      deadline: searchDeadline
+                      deadline: searchDeadline,
+                      perAttemptMs: 15000
                     });
 
                     if (aiResponse && aiResponse.text) {
@@ -3501,7 +3502,8 @@ ${sourcesPromptContext}
                     config: {
                       systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ ومباشر ومختصر. لا تقدم أي معلومات عن تفاصيل تطويرك إلا إذا سُئلت صراحة. أجب مستنداً حصراً إلى نتائج البحث المتاحة مع وضع ترقيم الاقتباسات [1]، [2] بدقة بالغة داخل الفقرات."
                     },
-                    deadline: searchDeadline
+                    deadline: searchDeadline,
+                    perAttemptMs: 15000
                   });
                   if (aiResponse && aiResponse.text) {
                     aiResultText = aiResponse.text;
@@ -3520,17 +3522,25 @@ ${sourcesPromptContext}
         }
 
         // Fallback to Google Search Grounding with Gemini if Tavily was not available or returned no results
+        // (single direct attempt — the multi-model fallback chain must NOT receive
+        //  the googleSearch tool since Gemma models reject it outright)
         if (!aiResultText) {
           try {
-            const googleSearchRes = await generateContentWithTracking({
-              model: "gemini-3.1-flash-lite",
-              contents: [{ role: 'user', parts: [{ text: userQuery }] }],
-              config: {
-                systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ وموثوق ومفصل بناءً على أحدث معلومات الويب والبحث المباشر. لا تذكر اسم أي شركة أو نموذج آخر.",
-                tools: [{ googleSearch: {} }]
-              },
-              deadline: searchDeadline
-            });
+            if (!ai) await refreshAiClient();
+            if (ai) {
+              const groundedPromise: Promise<any> = ai.models.generateContent({
+                model: "gemini-3.1-flash-lite",
+                contents: [{ role: 'user', parts: [{ text: userQuery }] }],
+                config: {
+                  systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ وموثوق ومفصل بناءً على أحدث معلومات الويب والبحث المباشر. لا تذكر اسم أي شركة أو نموذج آخر.",
+                  tools: [{ googleSearch: {} }]
+                }
+              });
+              groundedPromise.catch(() => {});
+              const googleSearchRes: any = await Promise.race([
+                groundedPromise,
+                new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error("Grounding did not respond within 15s"), { status: 504 })), 15000))
+              ]);
 
             if (googleSearchRes && googleSearchRes.text) {
               aiResultText = googleSearchRes.text;
@@ -3570,6 +3580,7 @@ ${sourcesPromptContext}
           }
         }
 
+        const searchFailed = !aiResultText;
         if (!aiResultText) {
           aiResultText = "عذراً، تعذر إجراء البحث في الويب حالياً. يرجى التأكد من مفتاح البحث أو إعادة المحاولة لاحقاً.";
         }
@@ -3580,7 +3591,7 @@ ${sourcesPromptContext}
           sources: primarySources,
           relatedSources: relatedSources,
           images: processedImages,
-          ...((!aiResultText || primarySources.length === 0) ? { searchDebug } : {})
+          ...(searchFailed ? { searchDebug } : {})
         });
       }
 
