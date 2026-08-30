@@ -211,7 +211,7 @@ export function AdminPanel({ onClose }: AdminPanelProps) {
     smtpUser: '',
     smtpPass: '',
     smtpFrom: '',
-    resendApiKey: 'REDACTED_RESIDUAL',
+    resendApiKey: '', // Security: keys are configured through the admin panel or environment variables only
     resendFrom: 'THOTH AI <onboarding@resend.dev>'
   });
   const [isLoadingApiKeys, setIsLoadingApiKeys] = useState(false);

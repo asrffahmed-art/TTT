@@ -4210,7 +4210,7 @@ ${searchContext}
     const dbKeys = await getDbApiKeys();
     let resendApiKey = process.env.RESEND_API_KEY || dbKeys.resendApiKey;
     if (!resendApiKey || typeof resendApiKey !== 'string' || resendApiKey.startsWith("****")) {
-      resendApiKey = "REDACTED_RESIDUAL";
+      resendApiKey = ""; // Security: keys are read from the environment (RESEND_API_KEY) or from the admin panel only
     }
     const resendFrom = process.env.RESEND_FROM || dbKeys.resendFrom || "THOTH AI <onboarding@resend.dev>";
 
@@ -4324,7 +4324,7 @@ ${searchContext}
         keyToUse = process.env.RESEND_API_KEY || dbKeys.resendApiKey;
       }
       if (!keyToUse || typeof keyToUse !== 'string' || keyToUse.startsWith("****")) {
-        keyToUse = "REDACTED_RESIDUAL";
+        keyToUse = ""; // Security: keys are read from the environment (RESEND_API_KEY) or from the admin panel only
       }
 
       const fromToUse = resendFrom || process.env.RESEND_FROM || dbKeys.resendFrom || "THOTH AI <onboarding@resend.dev>";
