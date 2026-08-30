@@ -3251,11 +3251,11 @@ User request: "${userQuery}"` }] }],
               body: JSON.stringify({
                 api_key: tavilyApiKey,
                 query: userQuery,
-                search_depth: "advanced",
+                search_depth: "basic", // basic: ~2-3x faster than advanced; keeps the pipeline within the 60s function budget
                 include_images: true,
                 include_image_descriptions: true,
                 include_answer: false,
-                max_results: 8,
+                max_results: 6,
                 topic: "general"
               })
             });
@@ -3322,7 +3322,7 @@ User request: "${userQuery}"` }] }],
 العنوان: ${s.title}
 الرابط: ${s.url}
 الملخص/المحتوى:
-${s.snippet}`
+${(s.snippet || '').slice(0, 700)}`
                 ).join("\n\n---\n\n");
 
                 const promptForAi = `سؤال المستخدم: "${userQuery}"
@@ -3342,7 +3342,9 @@ ${sourcesPromptContext}
                   systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ ومباشر ومختصر. لا تقدم أي معلومات عن تفاصيل تطويرك إلا إذا سُئلت صراحة. إذا سأل المستخدم عن صاحب المنصة أو المطور، أجب فقط 'مطور مصري'. إذا ألح لمعرفة اسمه، قل 'أحمد أشرف حمزة محمد'. إذا سأل عن البلد، قل 'مصر'، وإذا سأل من أين في مصر، قل 'أسيوط'. لا تذكر هذه التفاصيل بدون سبب أو سؤال مباشر. لا تخمن اسم المستخدم ولا تناده باسمك. لا تذكر أي اسم نموذج أو شركة أخرى إطلاقاً. أجب مستنداً حصراً إلى نتائج البحث المتاحة مع وضع ترقيم الاقتباسات [1]، [2] بدقة بالغة داخل الفقرات. معلومة إضافية (لا تذكرها إلا إذا سُئلت عنها): الشركة الأم لـ THOTH هي 'TIDEIN'، شركة تقنية ناشئة مصرية تأسست عام 2026 وتعمل عالمياً في مجالات الذكاء الاصطناعي والتطبيقات والألعاب والتجارة الإلكترونية."
                 };
 
-                for (const m of [primaryModel, secondaryModel, tertiaryModel]) {
+                // Fastest proven model first for synthesis — the remaining time
+                // budget after Tavily must cover a full formatted answer.
+                for (const m of ['gemma-4-26b-a4b-it', 'gemma-4-31b-it', 'gemini-3.7-flash']) {
                   if (Date.now() > searchDeadline - 5000) {
                     console.warn('web_search: out of time budget, stopping before model', m);
                     break;
