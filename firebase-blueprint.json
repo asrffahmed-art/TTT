@@ -1,0 +1,415 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile document stored in Firestore database",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "country": {
+          "type": "string"
+        },
+        "avatar": {
+          "type": "string"
+        },
+        "plan": {
+          "type": "string"
+        },
+        "authType": {
+          "type": "string"
+        },
+        "emailVerified": {
+          "type": "boolean"
+        },
+        "trustedDevices": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "termsAccepted": {
+          "type": "boolean"
+        },
+        "termsAcceptedAt": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "country", "termsAccepted"]
+    },
+    "chatSession": {
+      "title": "Chat Session",
+      "description": "Chat session record for user history",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "userId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "desc": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "userId", "title"]
+    },
+    "chatMessage": {
+      "title": "Chat Message",
+      "description": "Message entry within a chat session with full media and sender metadata",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "senderId": {
+          "type": "string"
+        },
+        "chatId": {
+          "type": "string"
+        },
+        "userId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "isUser": {
+          "type": "boolean"
+        },
+        "role": {
+          "type": "string"
+        },
+        "messageType": {
+          "type": "string",
+          "enum": ["text", "image", "video", "audio", "file"]
+        },
+        "mediaUrl": {
+          "type": "string"
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "mediaSize": {
+          "type": "number"
+        },
+        "mediaName": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "userId", "text"]
+    },
+    "keepNote": {
+      "title": "Keep Note",
+      "description": "User Google Keep note document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "color": { "type": "string" },
+        "isPinned": { "type": "boolean" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title"]
+    },
+    "classroomCourse": {
+      "title": "Classroom Course",
+      "description": "Google Classroom course document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "section": { "type": "string" },
+        "room": { "type": "string" },
+        "teacher": { "type": "string" },
+        "color": { "type": "string" },
+        "studentsCount": { "type": "number" }
+      },
+      "required": ["id", "name"]
+    },
+    "notificationToken": {
+      "title": "Notification Token",
+      "description": "FCM Device token record",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string" },
+        "platform": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "lastUsedAt": { "type": "string" },
+        "notificationsEnabled": { "type": "boolean" },
+        "userId": { "type": "string" }
+      },
+      "required": ["token", "userId"]
+    },
+    "notificationSettings": {
+      "title": "Notification Settings",
+      "description": "User notification preferences",
+      "type": "object",
+      "properties": {
+        "dailyEnabled": { "type": "boolean" },
+        "time": { "type": "string" },
+        "topics": { "type": "array", "items": { "type": "string" } },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "dailyNotification": {
+      "title": "Daily Notification",
+      "description": "Centralized daily briefing notification document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "headline": { "type": "string" },
+        "summary": { "type": "string" },
+        "topic": { "type": "string" },
+        "eventId": { "type": "string" },
+        "sources": { "type": "array", "items": { "type": "object" } },
+        "deepLink": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "body", "eventId"]
+    },
+    "campaign": {
+      "title": "Advertising Campaign",
+      "description": "Campaign document for managing ads and budgets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "advertiserId": { "type": "string" },
+        "status": { "type": "string", "enum": ["Draft", "Active", "Paused", "Completed"] },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "budget": { "type": "number" },
+        "placements": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "advertiserId", "status"]
+    },
+    "adCreative": {
+      "title": "Ad Creative",
+      "description": "Individual ad creative unit",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "advertiserId": { "type": "string" },
+        "title": { "type": "string" },
+        "creativeUrl": { "type": "string" },
+        "destinationUrl": { "type": "string" },
+        "placementId": { "type": "string" },
+        "status": { "type": "string", "enum": ["Active", "Disabled", "Archived"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "campaignId", "title", "status"]
+    },
+    "adEvent": {
+      "title": "Ad Analytics Event",
+      "description": "Aggregatable non-PII ad tracking event",
+      "type": "object",
+      "properties": {
+        "eventId": { "type": "string" },
+        "eventType": { "type": "string", "enum": ["ad_impression", "ad_click", "ad_view", "ad_close", "campaign_view", "conversion"] },
+        "adId": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "placementId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "deviceCategory": { "type": "string" },
+        "browserCategory": { "type": "string" },
+        "osCategory": { "type": "string" },
+        "language": { "type": "string" },
+        "coarseRegion": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "isValidTraffic": { "type": "boolean" }
+      },
+      "required": ["eventId", "eventType", "timestamp"]
+    },
+    "advertiser": {
+      "title": "Advertiser Account",
+      "description": "Advertiser profile for multi-tenant campaign management",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "company": { "type": "string" },
+        "email": { "type": "string" },
+        "apiKey": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "company", "apiKey"]
+    },
+    "adAuditLog": {
+      "title": "Ad Audit Log",
+      "description": "Security audit record for advertising system changes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "action": { "type": "string" },
+        "performedBy": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "action", "timestamp"]
+    },
+    "authVerification": {
+      "title": "Auth OTP Verification",
+      "description": "OTP verification document for email registration and new device login",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "code": { "type": "string" },
+        "purpose": { "type": "string", "enum": ["register", "login_new_device", "verify_email"] },
+        "deviceId": { "type": "string" },
+        "deviceInfo": { "type": "object" },
+        "expiresAt": { "type": "string" },
+        "attempts": { "type": "number" },
+        "verified": { "type": "boolean" },
+        "verifiedAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "code", "purpose", "expiresAt"]
+    },
+    "vectorItem": {
+      "title": "Vector Item",
+      "description": "Embedded text item with zero-PII metadata and vector embeddings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "sourceType": { "type": "string", "enum": ["feedback", "doc", "system_log", "ad_trend"] },
+        "topic": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "vector": { "type": "array", "items": { "type": "number" } },
+        "metadata": { "type": "object" }
+      },
+      "required": ["id", "title", "content", "sourceType", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/vectorStore/{vectorId}": {
+      "schema": { "$ref": "#/entities/vectorItem" },
+      "description": "Vector embeddings database store"
+    },
+    "/campaigns/{campaignId}": {
+      "schema": { "$ref": "#/entities/campaign" },
+      "description": "Advertising campaigns"
+    },
+    "/ads/{adId}": {
+      "schema": { "$ref": "#/entities/adCreative" },
+      "description": "Ad creatives"
+    },
+    "/adEvents/{eventId}": {
+      "schema": { "$ref": "#/entities/adEvent" },
+      "description": "Ad tracking events"
+    },
+    "/advertisers/{advertiserId}": {
+      "schema": { "$ref": "#/entities/advertiser" },
+      "description": "Advertisers accounts"
+    },
+    "/adAuditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/adAuditLog" },
+      "description": "Ad audit logs"
+    },
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/user"
+      },
+      "description": "User profile data"
+    },
+    "/users/{userId}/notificationTokens/{tokenId}": {
+      "schema": {
+        "$ref": "#/entities/notificationToken"
+      },
+      "description": "User FCM notification tokens"
+    },
+    "/users/{userId}/notificationSettings/{settingsId}": {
+      "schema": {
+        "$ref": "#/entities/notificationSettings"
+      },
+      "description": "User notification settings"
+    },
+    "/dailyNotifications/{notificationId}": {
+      "schema": {
+        "$ref": "#/entities/dailyNotification"
+      },
+      "description": "Centralized daily notifications"
+    },
+    "/users/{userId}/chats/{sessionId}": {
+      "schema": {
+        "$ref": "#/entities/chatSession"
+      },
+      "description": "Chat sessions collection"
+    },
+    "/users/{userId}/chats/{sessionId}/messages/{messageId}": {
+      "schema": {
+        "$ref": "#/entities/chatMessage"
+      },
+      "description": "Messages inside a chat session"
+    },
+    "/users/{userId}/notes/{noteId}": {
+      "schema": {
+        "$ref": "#/entities/keepNote"
+      },
+      "description": "Notes collection for user"
+    },
+    "/users/{userId}/classroomCourses/{courseId}": {
+      "schema": {
+        "$ref": "#/entities/classroomCourse"
+      },
+      "description": "Google Classroom courses collection"
+    },
+    "/auth_verifications/{verificationId}": {
+      "schema": {
+        "$ref": "#/entities/authVerification"
+      },
+      "description": "Email OTP verification codes and status"
+    }
+  }
+}

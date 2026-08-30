@@ -1,0 +1,511 @@
+import { syncUsageFromServer, initSubscriptionPlans } from './lib/subscriptionService';
+import { handleUserLogoutCleanup, loadAllSessions } from './lib/chatSessionManager';
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { useState, useEffect } from 'react';
+import { useLanguage } from './lib/LanguageContext';
+import { MessageSquare, Compass, History as HistoryIcon, Settings as SettingsIcon, Bookmark, GraduationCap, ListTodo, Radio, Languages, Sparkles, Bell, X } from 'lucide-react';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { auth, db, testFirestoreConnection } from './lib/firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { Chat } from './components/Chat';
+import { LiveTranslate } from './components/LiveTranslate';
+import { Discover } from './components/Discover';
+import { History } from './components/History';
+import { Settings } from './components/Settings';
+import { KeepNotes } from './components/KeepNotes';
+import { Classroom } from './components/Classroom';
+import { GoogleTasks } from './components/GoogleTasks';
+import { Subscription } from './components/Subscription';
+import { AdminPanel } from './components/AdminPanel';
+import { VoiceDialog } from './components/VoiceDialog';
+import { Auth } from './components/Auth';
+import { Navigation } from './components/Navigation';
+import { Header } from './components/Header';
+import { DailyBriefingModal } from './components/DailyBriefingModal';
+import { listenToForegroundMessages } from './services/notificationService';
+import { THEMES, getStoredThemeId, setStoredTheme, useAppTheme } from './lib/themeService';
+import { adTracker } from './lib/adTrackingService';
+
+import { PaymentResultModal, PaymentModalData } from './components/PaymentResultModal';
+
+export default function App() {
+  const { t, language } = useLanguage();
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return localStorage.getItem('isAuth') === 'true';
+  });
+  const [activeTab, setActiveTab] = useState('chat');
+  const [initialMessage, setInitialMessage] = useState<any>('');
+  const [isLiveAudioOpen, setIsLiveAudioOpen] = useState(false);
+  const [isArtifactOpen, setIsArtifactOpen] = useState(false);
+  const [isDailyBriefingOpen, setIsDailyBriefingOpen] = useState(false);
+  const [isKeepModalOpen, setIsKeepModalOpen] = useState(false);
+
+  useEffect(() => {
+    initSubscriptionPlans();
+    const handleArtifactToggle = (e: any) => {
+      setIsArtifactOpen(!!e.detail);
+    };
+    window.addEventListener('artifact-fullscreen-change', handleArtifactToggle);
+    return () => window.removeEventListener('artifact-fullscreen-change', handleArtifactToggle);
+  }, []);
+  const [dailyNotificationId, setDailyNotificationId] = useState<string | null>(null);
+  const [foregroundToast, setForegroundToast] = useState<any>(null);
+  const [announcementBanner, setAnnouncementBanner] = useState<{ text: string; type: 'info' | 'warning' | 'alert' } | null>(null);
+  const [paymentModalData, setPaymentModalData] = useState<PaymentModalData | null>(null);
+
+  // Listen to open-payment-modal custom event from Subscription component
+  useEffect(() => {
+    const handleOpenModal = (e: any) => {
+      if (e.detail) {
+        setPaymentModalData(e.detail);
+      }
+    };
+    window.addEventListener('open-payment-modal', handleOpenModal);
+    return () => window.removeEventListener('open-payment-modal', handleOpenModal);
+  }, []);
+  const [isMaintenance, setIsMaintenance] = useState<{ active: boolean; message: string }>({ active: false, message: '' });
+  const activeTheme = useAppTheme();
+
+  // Active Tab Telemetry Tracking
+  useEffect(() => {
+    adTracker.setActiveFeature(activeTab);
+  }, [activeTab]);
+
+  // Fetch System Config (Announcement Banner & Maintenance Mode)
+  useEffect(() => {
+    const checkSysConfig = async () => {
+      try {
+        const res = await fetch('/api/system-config');
+        const contentType = res.headers.get('content-type');
+        if (res.ok && contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.config) {
+            if (data.config.maintenanceMode) {
+              const isAdminUser = (localStorage.getItem('app-user-email') || '').toLowerCase() === 'onq6974@gmail.com';
+              if (!isAdminUser) {
+                setIsMaintenance({ active: true, message: data.config.maintenanceMessage || 'الموقع قيد الصيانة حالياً.' });
+              }
+            }
+            if (data.config.announcement?.enabled && data.config.announcement?.text) {
+              setAnnouncementBanner({
+                text: data.config.announcement.text,
+                type: data.config.announcement.type || 'info'
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error loading sys config:', err);
+      }
+    };
+    checkSysConfig();
+  }, []);
+
+  // Check URL parameters for deep links e.g. ?dailyId=... or #daily-briefing
+  useEffect(() => {
+    const checkDeepLink = () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        
+        const paymentStatus = params.get('payment_status');
+        if (paymentStatus === 'success' || paymentStatus === 'failed') {
+           // If we are inside an iframe (e.g., Paymob iframe), try to break out if frame permissions allow
+           if (window !== window.top) {
+              try {
+                 if (window.top && window.top.location) {
+                    window.top.location.href = window.location.href;
+                    return;
+                 }
+              } catch (e) {
+                 // Ignore cross-origin frame navigation security errors
+                 console.warn('Could not navigate parent frame due to security restrictions:', e);
+              }
+           }
+
+           const urlOrderId = params.get('orderId') || localStorage.getItem('thoth_last_order_id') || 'THOTH-PAYMOB-ONLINE';
+           const urlPlanId = params.get('planId') || localStorage.getItem('thoth_user_plan') || 'pro';
+
+           setPaymentModalData({
+             status: paymentStatus === 'success' ? 'verifying' : 'failed',
+             orderId: urlOrderId,
+             planId: urlPlanId,
+             planName: urlPlanId === 'ultra' ? 'باقة ألترا Ultra' : urlPlanId === 'max' ? 'باقة مكس Max' : 'باقة المحترفين Pro',
+             paymentMethod: 'بوابة Paymob - بطاقة بنكية',
+             failureReason: paymentStatus === 'failed' ? 'تم رفض المعاملة من قبل البنك المصدر أو لم يتم التوثيق بنجاح.' : undefined
+           });
+           syncUsageFromServer(); // Force immediate refresh of the user's plan from Firestore
+           const url = new URL(window.location.href);
+           url.searchParams.delete('payment_status');
+           url.searchParams.delete('orderId');
+           url.searchParams.delete('userId');
+           url.searchParams.delete('planId');
+           window.history.replaceState({}, document.title, url.pathname + url.search);
+        }
+
+        const dailyId = params.get('dailyId');
+        if (dailyId) {
+          setDailyNotificationId(dailyId);
+          setIsDailyBriefingOpen(true);
+        } else if (window.location.hash === '#daily-briefing') {
+          setIsDailyBriefingOpen(true);
+        }
+      } catch (err) {
+        console.warn('Error checking deep link:', err);
+      }
+    };
+
+    checkDeepLink();
+    window.addEventListener('popstate', checkDeepLink);
+    return () => window.removeEventListener('popstate', checkDeepLink);
+  }, []);
+
+  // Listen for Foreground FCM Push Messages
+  useEffect(() => {
+    const unsubscribeFCM = listenToForegroundMessages((payload) => {
+      console.log('App received foreground FCM message:', payload);
+      const notifId = payload?.data?.notificationId || payload?.data?.tag || null;
+      setForegroundToast({
+        title: payload?.notification?.title || '🔔 THOTH Daily',
+        body: payload?.notification?.body || 'تم استلام إشعار جديد اليوم!',
+        notificationId: notifId
+      });
+    });
+
+    return () => {
+      if (typeof unsubscribeFCM === 'function') unsubscribeFCM();
+    };
+  }, []);
+
+
+  useEffect(() => {
+    testFirestoreConnection();
+    syncUsageFromServer(); // Initial sync (guest or before auth resolves)
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        try {
+          const userDocSnap = await getDoc(doc(db, 'users', user.uid));
+          const data = userDocSnap.exists() ? (userDocSnap.data() as any) : null;
+          
+          // Verify user registration on Firestore database
+          const isProfileComplete = data && data.termsAccepted === true && !!data.country;
+
+          if (isProfileComplete) {
+            localStorage.setItem('app-user-id', user.uid);
+            syncUsageFromServer(user.uid); // Re-sync with explicit user ID
+            setCurrentUser(user);
+            setIsAuthenticated(true);
+            localStorage.setItem('isAuth', 'true');
+            window.dispatchEvent(new Event('thoth_auth_changed'));
+            if (data.name || user.displayName) localStorage.setItem('app-user-name', data.name || user.displayName);
+            if (user.email) localStorage.setItem('app-user-email', user.email);
+            if (data.avatar || user.photoURL) localStorage.setItem('app-user-avatar', data.avatar || user.photoURL);
+            if (data.country) localStorage.setItem('app-user-country', data.country);
+            if (data.authType) localStorage.setItem('app-user-auth-type', data.authType);
+
+            if (data.plan) {
+              const cleanPlan = data.plan.toString().toLowerCase().trim();
+              localStorage.setItem('thoth_user_plan', cleanPlan);
+              window.dispatchEvent(new Event('thoth_plan_updated'));
+              window.dispatchEvent(new Event('thoth_usage_updated'));
+            }
+            if (data.theme) {
+              setStoredTheme(data.theme);
+            }
+            if (data.age) localStorage.setItem('app-user-age', data.age);
+            if (data.school) localStorage.setItem('app-user-school', data.school);
+            if (data.interests) localStorage.setItem('app-user-interests', data.interests);
+            if (data.friends) localStorage.setItem('app-user-friends', data.friends);
+            if (data.bio) localStorage.setItem('app-user-bio', data.bio);
+          } else {
+            // User is signed in to Firebase Auth but onboarding is not completed in Firestore database
+            setIsAuthenticated(false);
+            localStorage.removeItem('isAuth');
+            window.dispatchEvent(new Event('thoth_auth_changed'));
+            setCurrentUser(user);
+            setActiveTab('auth');
+          }
+        } catch (e) {
+          console.error('Error loading user settings from Firestore:', e);
+        }
+      } else {
+        setIsAuthenticated(false);
+        localStorage.removeItem('isAuth');
+        window.dispatchEvent(new Event('thoth_auth_changed'));
+        localStorage.removeItem('app-user-id');
+        localStorage.removeItem('app-user-name');
+        localStorage.removeItem('app-user-email');
+        localStorage.removeItem('app-user-avatar');
+        localStorage.removeItem('app-user-country');
+        localStorage.removeItem('app-user-auth-type');
+        handleUserLogoutCleanup();
+        syncUsageFromServer('guest');
+        setCurrentUser(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleAuthSuccess = () => {
+    setIsAuthenticated(true);
+    setActiveTab('chat');
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
+    localStorage.removeItem('isAuth');
+    localStorage.removeItem('app-user-id');
+    localStorage.removeItem('app-user-name');
+    localStorage.removeItem('app-user-email');
+    localStorage.removeItem('app-user-avatar');
+    localStorage.removeItem('app-user-auth-type');
+    handleUserLogoutCleanup();
+    setIsAuthenticated(false);
+    setActiveTab('chat');
+    window.dispatchEvent(new Event('storage'));
+  };
+
+  const handleStartAction = (msg: any) => {
+    setInitialMessage(msg);
+    setActiveTab('chat');
+  };
+
+  const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null);
+
+  
+
+  if (isMaintenance.active) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-6 text-center bg-[#0d1017] text-white" dir={language === 'ar' ? 'rtl' : 'ltr'}>
+        <div className="w-20 h-20 rounded-3xl bg-red-500/20 border border-red-500/30 text-red-400 flex items-center justify-center mb-6 shadow-2xl animate-pulse">
+          <Sparkles className="w-10 h-10" />
+        </div>
+        <h1 className="text-2xl font-black text-white mb-3">{language === 'ar' ? 'الموقع قيد الصيانة الدورية' : 'Site under maintenance'}</h1>
+        <p className="text-sm text-white/70 max-w-md leading-relaxed mb-8">
+          {isMaintenance.message}
+        </p>
+        <div className="px-5 py-2.5 rounded-full bg-white/5 border border-white/10 text-xs text-white/50">
+          {language === 'ar' ? 'شكراً لتفهمكم وصبركم، سنعود للعمل قريباً جداً 🚀' : 'Thank you for your patience, we will be back soon 🚀'}
+        </div>
+      </div>
+    );
+  }
+
+  const tabs = [
+    { id: 'chat', label: t('newChat', 'المحادثة'), icon: MessageSquare },
+    { id: 'translate', label: t('liveTranslate', 'ترجمة حية'), icon: Languages },
+    { id: 'tasks', label: t('tasks', 'المهام'), icon: ListTodo },
+    { id: 'keep', label: t('keepNotes', 'الملاحظات'), icon: Bookmark },
+  ];
+
+  const getTitle = () => {
+    switch(activeTab) {
+      case 'chat': return language === 'ar' ? 'المحادثة الذكية' : 'Smart Chat';
+      case 'voice': return language === 'ar' ? 'المحادثة الصوتية المباشرة' : 'Live Voice Chat';
+      case 'translate': return language === 'ar' ? 'الترجمة الفورية المباشرة' : 'Live Translation';
+      case 'tasks': return t('tasks', 'المهام');
+      case 'classroom': return t('classroom', 'الفصول الدراسية');
+      case 'keep': return t('keepNotes', 'الملاحظات');
+      case 'history': return t('history', 'سجل المحادثات');
+      case 'discover': return language === 'ar' ? 'استكشف النماذج' : 'Discover Models';
+      case 'subscription': return language === 'ar' ? 'الاشتراكات وحدود الاستخدام' : 'Subscriptions & Limits';
+      case 'settings': return t('settings', 'الإعدادات');
+      case 'auth': return language === 'ar' ? 'تسجيل الدخول' : 'Sign In';
+      case 'admin': return t('adminPanel', 'لوحة تحكم المسؤول (الأدمن)');
+      default: return 'THOTH';
+    }
+  };
+
+  const isAnyModalOpen = isLiveAudioOpen || isArtifactOpen || isDailyBriefingOpen || (activeTab === 'keep' && isKeepModalOpen) || !!paymentModalData;
+
+  return (
+    <div className={`flex flex-col h-screen w-full ${activeTheme.bgClass} text-gray-100 font-sans overflow-hidden relative selection:bg-zinc-700/50 selection:text-white transition-colors duration-500`}>
+      {/* Dynamic ambient lighting effects based on theme */}
+      <div className={`absolute top-0 right-1/4 w-[500px] h-[300px] ${activeTheme.ambientLight1} blur-[120px] pointer-events-none rounded-full transition-all duration-700`} />
+      <div className={`absolute bottom-10 left-1/4 w-[400px] h-[300px] ${activeTheme.ambientLight2} blur-[120px] pointer-events-none rounded-full transition-all duration-700`} />
+
+      <div className={!isAnyModalOpen && activeTab !== 'settings' && activeTab !== 'subscription' && activeTab !== 'history' && activeTab !== 'auth' ? '' : 'hidden'}>
+        <Header 
+          isAuthenticated={isAuthenticated}
+          title={getTitle()} 
+          onOpenSettings={() => setActiveTab('settings')} 
+          onOpenSubscription={() => setActiveTab('subscription')} 
+          onOpenDailyBriefing={() => setIsDailyBriefingOpen(true)}
+          onOpenHistory={() => setActiveTab('history')}
+          onOpenAuth={() => setActiveTab('auth')}
+        />
+      </div>
+
+      {/* Payment Result & Verification Modal */}
+      {paymentModalData && (
+        <PaymentResultModal 
+          data={paymentModalData}
+          onClose={() => setPaymentModalData(null)}
+          onRetry={() => {
+            setPaymentModalData(null);
+            setActiveTab('subscription');
+          }}
+          onContactSupport={() => {
+            window.location.href = 'mailto:support@thoth.ai';
+          }}
+        />
+      )}
+
+      {/* Global Admin Announcement Banner */}
+      {announcementBanner && (
+        <div 
+          className={`w-full py-2 px-4 text-xs font-bold text-center flex items-center justify-between gap-2 z-30 transition-all ${
+            announcementBanner.type === 'alert'
+              ? 'bg-red-600/90 text-white border-b border-red-500/50'
+              : announcementBanner.type === 'warning'
+              ? 'bg-amber-600/90 text-white border-b border-amber-500/50'
+              : 'bg-gradient-to-r from-purple-700/90 to-indigo-700/90 text-white border-b border-purple-500/50'
+          }`}
+         
+        >
+          <div className="flex items-center gap-2 mx-auto">
+            <Sparkles className="w-3.5 h-3.5 animate-pulse shrink-0" />
+            <span>{announcementBanner.text}</span>
+          </div>
+          <button 
+            onClick={() => setAnnouncementBanner(null)}
+            className="p-1 text-white/70 hover:text-white rounded-md"
+            title="إغلاق الإعلان"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Foreground Notification Toast Banner */}
+      {foregroundToast && (
+        <div className="fixed top-20 right-4 left-4 sm:left-auto sm:w-96 z-50 bg-[#141824] border border-pink-500/50 p-4 rounded-2xl shadow-2xl animate-in slide-in-from-top duration-300 flex items-start gap-3 text-right">
+          <div className="w-10 h-10 rounded-xl bg-pink-500/20 text-pink-400 border border-pink-500/30 flex items-center justify-center shrink-0">
+            <Bell className="w-5 h-5 animate-bounce" />
+          </div>
+          <div className="flex-1 overflow-hidden">
+            <h4 className="text-sm font-bold text-white">{foregroundToast.title}</h4>
+            <p className="text-xs text-white/70 truncate">{foregroundToast.body}</p>
+            <button
+              onClick={() => {
+                if (foregroundToast.notificationId) setDailyNotificationId(foregroundToast.notificationId);
+                setIsDailyBriefingOpen(true);
+                setForegroundToast(null);
+              }}
+              className="mt-2 text-xs font-bold text-pink-400 hover:text-pink-300 underline"
+            >
+              عرض حدث اليوم والتفاصيل الكاملة ←
+            </button>
+          </div>
+          <button
+            onClick={() => setForegroundToast(null)}
+            className="p-1 text-white/40 hover:text-white rounded-lg hover:bg-white/10"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Daily Briefing Modal */}
+      {isDailyBriefingOpen && (
+        <DailyBriefingModal
+          notificationId={dailyNotificationId}
+          onClose={() => {
+            setIsDailyBriefingOpen(false);
+            setDailyNotificationId(null);
+          }}
+        />
+      )}
+      
+      <main className="flex-1 overflow-hidden relative z-0">
+        <div className={activeTab === 'chat' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <Chat 
+            initialMessage={initialMessage} 
+            clearInitialMessage={() => setInitialMessage('')} 
+            activeChatId={activeChatSessionId}
+            onSelectChatId={(id) => setActiveChatSessionId(id)}
+            onToggleLiveModal={(isOpen) => setIsLiveAudioOpen(isOpen)}
+            onToggleArtifactModal={(isOpen) => setIsArtifactOpen(isOpen)}
+            onNavigate={(tab) => setActiveTab(tab)}
+            isAuthenticated={isAuthenticated}
+          />
+        </div>
+        {(isLiveAudioOpen) && (
+          <VoiceDialog 
+            onClose={() => { setIsLiveAudioOpen(false); }} 
+            onOpenAuth={() => {
+              setIsLiveAudioOpen(false);
+              setActiveTab('auth');
+            }}
+          />
+        )}
+        <div className={activeTab === 'translate' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <LiveTranslate onSendToChat={handleStartAction} onNavigate={(tab) => setActiveTab(tab)} />
+        </div>
+        <div className={activeTab === 'tasks' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <GoogleTasks onAction={handleStartAction} />
+        </div>
+        <div className={activeTab === 'classroom' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <Classroom onStartAiChat={handleStartAction} />
+        </div>
+        <div className={activeTab === 'keep' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <KeepNotes onAction={handleStartAction} onModalToggle={setIsKeepModalOpen} />
+        </div>
+        <div className={activeTab === 'discover' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <Discover onAction={handleStartAction} onNavigate={(tab) => setActiveTab(tab)} />
+        </div>
+        <div className={activeTab === 'history' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <History 
+            onBack={() => setActiveTab('chat')}
+            onSelectChat={(chatId) => {
+              setActiveChatSessionId(chatId);
+              setActiveTab('chat');
+            }}
+            onNewChat={() => {
+              const newId = `new_${Date.now()}`;
+              setActiveChatSessionId(newId);
+              setActiveTab('chat');
+            }}
+            onAction={handleStartAction} 
+          />
+        </div>
+        <div className={activeTab === 'subscription' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <Subscription onClose={() => setActiveTab('chat')} />
+        </div>
+        <div className={activeTab === 'settings' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <Settings 
+            onClose={() => setActiveTab('chat')}
+            onLogout={handleLogout} 
+            onOpenSubscription={() => setActiveTab('subscription')} 
+            onOpenAdminPanel={() => setActiveTab('admin')} 
+            onOpenDiscover={() => setActiveTab('discover')}
+            onOpenHistory={() => setActiveTab('history')}
+            onOpenAuth={() => setActiveTab('auth')}
+          />
+        </div>
+        <div className={activeTab === 'auth' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <Auth 
+            onAuth={handleAuthSuccess}
+            onClose={() => setActiveTab('chat')}
+          />
+        </div>
+        <div className={activeTab === 'admin' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <AdminPanel onClose={() => setActiveTab('settings')} />
+        </div>
+      </main>
+
+      <div className={!isAnyModalOpen && activeTab !== 'subscription' && activeTab !== 'history' && isAuthenticated ? '' : 'hidden'}>
+        <Navigation activeTab={activeTab} setActiveTab={setActiveTab} tabs={tabs} />
+      </div>
+    </div>
+  );
+}
+

@@ -1,0 +1,37 @@
+--- server.ts
++++ server.ts
+@@ -854,6 +854,34 @@
+ 
++app.post("/api/transcribe", async (req, res) => {
++  try {
++    const { audioData, mimeType = "audio/webm" } = req.body;
++    if (!audioData) return res.status(400).json({ error: "No audio data provided" });
++    
++    const audioMatch = audioData.match(/^data:([^;]+);base64,(.+)$/);
++    if (!audioMatch) return res.status(400).json({ error: "Invalid audio format" });
++    
++    if (!ai) await refreshAiClient();
++    if (!ai) return res.status(500).json({ error: "No AI client available" });
++
++    const response = await ai.models.generateContent({
++      model: "gemini-2.5-flash",
++      contents: [
++        {
++          role: "user",
++          parts: [
++            { text: "قم بتفريغ وتحويل هذا المقطع الصوتي إلى نص مكتوب بدقة متناهية. لا تضف أي تعليقات، فقط النص الموجود في الصوت كما هو باللغة التي قيل بها، ويفضل العربية إذا كان كذلك." },
++            { inlineData: { mimeType: audioMatch[1], data: audioMatch[2] } }
++          ]
++        }
++      ]
++    });
++    
++    const text = response.text || "";
++    res.json({ text: text.trim() });
++  } catch (err: any) {
++    console.error("Transcription error:", err);
++    res.status(500).json({ error: "Transcription failed" });
++  }
++});
++
+ app.post("/api/chat", async (req, res) => {

@@ -1,0 +1,25 @@
+# Render.com deployment — full Express server with WebSocket support (THOTH Live)
+# 1. Push this repo to GitHub
+# 2. On https://dashboard.render.com → New → Blueprint → select this repo
+# 3. Set the GEMINI_API_KEY env var when prompted (choose a US/Singapore region,
+#    NOT Hong Kong — the Gemini API is not available from Hong Kong)
+
+services:
+  - type: web
+    name: thoth-server
+    runtime: node
+    plan: starter
+    region: oregon          # US region — required for Gemini API availability
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false         # set manually in the Render dashboard
+      # - key: RESEND_API_KEY
+      #   sync: false
+      # - key: RESEND_FROM
+      #   sync: false
