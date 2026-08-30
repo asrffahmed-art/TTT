@@ -3574,6 +3574,7 @@ ${sourcesPromptContext}
               primarySources = rawGoogleSources.slice(0, 4);
               relatedSources = rawGoogleSources.slice(4, 8);
             }
+            } // end if (ai)
           } catch (googleErr: any) {
             console.error("Google Search Grounding fallback failed:", googleErr);
             searchDebug.groundingErr = googleErr?.message || String(googleErr);
