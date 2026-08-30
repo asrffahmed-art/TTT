@@ -925,7 +925,7 @@ async function generateContentWithTracking(
         }
         delete attemptParams.deadline;
         // Per-attempt timeout: a hanging model call must not eat the whole budget
-        const attemptTimeoutMs = Math.max(5000, Math.min(45000, remainingBudget - 2000));
+        const attemptTimeoutMs = Math.max(5000, Math.min(35000, remainingBudget - 2000));
         let timerRef: any = null;
         const genPromise: Promise<any> = ai.models.generateContent(attemptParams);
         genPromise.catch(() => {}); // no unhandled rejection if the timeout wins the race
@@ -3230,6 +3230,8 @@ User request: "${userQuery}"` }] }],
       if (mode === 'web_search') {
         const dbKeys = await getDbApiKeys();
         const tavilyApiKey = (typeof dbKeys.tavilyApiKey === 'string' ? dbKeys.tavilyApiKey.trim() : "");
+        // One shared deadline for the whole search pipeline (Tavily + all model calls)
+        const searchDeadline = Date.now() + 55000;
 
         let primarySources: any[] = [];
         let relatedSources: any[] = [];
@@ -3245,6 +3247,7 @@ User request: "${userQuery}"` }] }],
               headers: {
                 "Content-Type": "application/json"
               },
+              signal: AbortSignal.timeout(20000), // a hanging Tavily call must not eat the function budget
               body: JSON.stringify({
                 api_key: tavilyApiKey,
                 query: userQuery,
@@ -3340,11 +3343,16 @@ ${sourcesPromptContext}
                 };
 
                 for (const m of [primaryModel, secondaryModel, tertiaryModel]) {
+                  if (Date.now() > searchDeadline - 5000) {
+                    console.warn('web_search: out of time budget, stopping before model', m);
+                    break;
+                  }
                   try {
                     const aiResponse = await generateContentWithTracking({
                       model: m,
                       contents: [{ role: 'user', parts: [{ text: promptForAi }] }],
-                      config: searchGenConfig
+                      config: searchGenConfig,
+                      deadline: searchDeadline
                     });
 
                     if (aiResponse && aiResponse.text) {
@@ -3374,7 +3382,8 @@ ${sourcesPromptContext}
               config: {
                 systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ وموثوق ومفصل بناءً على أحدث معلومات الويب والبحث المباشر. لا تذكر اسم أي شركة أو نموذج آخر.",
                 tools: [{ googleSearch: {} }]
-              }
+              },
+              deadline: searchDeadline
             });
 
             if (googleSearchRes && googleSearchRes.text) {
@@ -3576,14 +3585,18 @@ ${sourcesPromptContext}
         res.json(result);
       } catch (err: any) {
         console.error("All AI model attempts failed:", err?.message || err);
-        res.json({ 
-          text: "عذراً، وصل استخدام الذكاء الاصطناعي إلى الحد المؤقت المسموح به. يرجى الانتظار بضع ثوانٍ وإعادة إرسال الرسالة.",
-          error: true, debug: err?.message || String(err)
+        // Honest server error (503): the frontend shows it as a server-error box —
+        // never fake a "usage limit" message for internal failures.
+        res.status(503).json({
+          error: true,
+          code: 'AI_SERVICE_ERROR',
+          text: "عذراً، تعذر إكمال طلب الذكاء الاصطناعي الآن بسبب خطأ في خدمة النماذج. يرجى إعادة المحاولة بعد لحظات.",
+          debug: err?.message || String(err)
         });
       }
     } catch (error: any) {
       console.error("Error generating response:", error);
-      res.json({ text: "عذراً، حدث خطأ مؤقت أثناء الاتصال بالذكاء الاصطناعي. يرجى إعادة المحاولة.", error: true });
+      res.status(500).json({ error: true, code: 'AI_INTERNAL_ERROR', text: "عذراً، حدث خطأ مؤقت أثناء الاتصال بالذكاء الاصطناعي. يرجى إعادة المحاولة." });
     }
   });
 
