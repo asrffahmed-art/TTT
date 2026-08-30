@@ -144,6 +144,27 @@ export const app = express();
 // Add helper to handle missing server object in startServer
 let server: any;
 
+// Module-level handle to the live-voice WebSocketServer so serverless entry
+// (api/index.mjs on Vercel) can perform WebSocket upgrades even without a
+// long-lived http.Server. Standalone mode uses the same instance.
+let liveWss: WebSocketServer | null = null;
+
+export function handleLiveUpgrade(request: any, socket: any, head: any): boolean {
+  if (!liveWss) return false;
+  try {
+    const url = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
+    if (url.pathname === "/api/live-audio" || url.pathname === "/api/live-translate-ws") {
+      liveWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+        liveWss!.emit("connection", ws, request);
+      });
+      return true;
+    }
+  } catch (err) {
+    console.error("Live WS upgrade error:", err);
+  }
+  return false;
+}
+
 async function startServer() {
   refreshAiClient().catch(err => console.error("Error refreshing AI client on startup:", err)); // Run in background to not block route registration
   
@@ -9422,6 +9443,7 @@ app.all("/api/*", (req, res) => {
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
+  liveWss = wss; // expose for serverless WebSocket upgrades
 
   server.on("upgrade", (request, socket, head) => {
     try {

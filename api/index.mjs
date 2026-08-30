@@ -606,6 +606,22 @@ async function refreshAiClient() {
   }
 }
 var app = express();
+var liveWss = null;
+function handleLiveUpgrade(request, socket, head) {
+  if (!liveWss) return false;
+  try {
+    const url = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
+    if (url.pathname === "/api/live-audio" || url.pathname === "/api/live-translate-ws") {
+      liveWss.handleUpgrade(request, socket, head, (ws) => {
+        liveWss.emit("connection", ws, request);
+      });
+      return true;
+    }
+  } catch (err) {
+    console.error("Live WS upgrade error:", err);
+  }
+  return false;
+}
 async function startServer() {
   refreshAiClient().catch((err) => console.error("Error refreshing AI client on startup:", err));
   app.use(express.json({ limit: "150mb" }));
@@ -8372,6 +8388,7 @@ ${searchContext}
   }
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
+  liveWss = wss;
   server.on("upgrade", (request, socket, head) => {
     try {
       const url = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
@@ -8750,8 +8767,23 @@ ${searchContext}
 startServer();
 
 // vercel-function-entry.ts
-var maxDuration = 60;
+var maxDuration = 300;
 async function handler(req, res) {
+  try {
+    const isUpgrade = req && typeof req.headers?.upgrade === "string" && req.headers.upgrade.toLowerCase() === "websocket";
+    if (isUpgrade) {
+      const handled = handleLiveUpgrade(req, req.socket, Buffer.alloc(0));
+      if (handled) {
+        return;
+      }
+      if (!res.headersSent && res.socket && typeof res.socket.end === "function") {
+        res.socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      }
+      return;
+    }
+  } catch (wsErr) {
+    console.error("[THOTH FUNC] WS upgrade dispatch error:", wsErr);
+  }
   try {
     return await app(req, res);
   } catch (err) {
