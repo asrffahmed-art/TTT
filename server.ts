@@ -1201,7 +1201,10 @@ async function routeUnderstandingTask({
       break;
     }
 
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // With a shared deadline, retrying the same model wastes the budget that
+    // other fallback models (and the caller's remaining stages) still need.
+    const maxAttempts = deadline ? 1 : 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const response = await generateContentWithTracking({
           model: modelId,
@@ -2433,11 +2436,14 @@ async function synthesizeFullAudioScript(
   // count adapts to the remaining time budget so the route always responds.
   const ttsDeadline = deadline || (Date.now() + 45000);
   const remainingMs = ttsDeadline - Date.now();
-  if (remainingMs < 9000) {
+  // One parallel TTS round can take up to ~20s; below 22s there is no safe
+  // window left inside the 60s function limit — return null so the caller
+  // responds with the text-only summary instead of risking a 504.
+  if (remainingMs < 22000) {
     console.warn('[AUDIO TTS] No time budget left for TTS round — falling back to text-only');
     return null;
   }
-  const maxChunks = remainingMs > 30000 ? 3 : remainingMs > 18000 ? 2 : 1;
+  const maxChunks = remainingMs > 35000 ? 3 : remainingMs > 28000 ? 2 : 1;
   const selectedChunks = chunks.slice(0, maxChunks);
   const pcmBuffers: Buffer[] = [];
   const mp3Buffers: Buffer[] = [];
