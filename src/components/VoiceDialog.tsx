@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { useLanguage } from '../lib/LanguageContext';
 import { getDeviceId } from '../lib/otpService';
+import { liveWsUrl } from '../services/wsUrl';
 
 export interface VoiceOption {
   id: string;
@@ -261,8 +262,7 @@ export function VoiceDialog({
     try {
       const userId = localStorage.getItem('app-user-id') || localStorage.getItem('thoth_user_id') || '';
       const deviceId = getDeviceId();
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/live-audio?voice=${encodeURIComponent(voiceId)}&userId=${encodeURIComponent(userId)}&deviceId=${encodeURIComponent(deviceId)}`;
+      const wsUrl = liveWsUrl(`/api/live-audio?voice=${encodeURIComponent(voiceId)}&userId=${encodeURIComponent(userId)}&deviceId=${encodeURIComponent(deviceId)}`);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 

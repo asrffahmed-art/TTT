@@ -3,6 +3,7 @@ import { Languages, ArrowLeftRight, Volume2, Copy, Check, Mic, MicOff, Sparkles,
 import { auth } from '../lib/firebase';
 import { useAppTheme } from '../lib/themeService';
 import { useLanguage } from '../lib/LanguageContext';
+import { liveWsUrl } from '../services/wsUrl';
 
 interface LiveTranslateProps {
   onSendToChat?: (text: string) => void;
@@ -346,8 +347,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       const targetLang = targetLangId === 'ar' ? (targetDialectId || 'ar_msa') : targetLangId;
       const currentUser = auth.currentUser;
       const userId = currentUser ? currentUser.uid : '';
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/live-translate-ws?targetLang=${encodeURIComponent(targetLang)}&userId=${encodeURIComponent(userId)}`;
+      const wsUrl = liveWsUrl(`/api/live-translate-ws?targetLang=${encodeURIComponent(targetLang)}&userId=${encodeURIComponent(userId)}`);
 
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;

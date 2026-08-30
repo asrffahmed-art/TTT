@@ -1,4 +1,5 @@
 import { NativeAudioPlayer } from '../../services/nativeAudioPlayback';
+import { liveWsUrl } from '../../services/wsUrl';
 import React, { useState, useRef } from 'react';
 import { Mic, Volume2, Activity, Server, Download, Trash } from 'lucide-react';
 
@@ -194,8 +195,7 @@ export function AdminAudioDiagnostics() {
     const ctx = outputAudioCtxRef.current;
     if (ctx && ctx.state === 'suspended') ctx.resume();
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/live-audio?model=gemini-3.1-flash-live-preview&voice=Puck`;
+    const wsUrl = liveWsUrl('/api/live-audio?model=gemini-3.1-flash-live-preview&voice=Puck');
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

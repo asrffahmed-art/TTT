@@ -3,6 +3,8 @@
  * Pure live bidirectional voice streaming via WebSockets with zero text conversions.
  */
 
+import { liveWsUrl } from './wsUrl';
+
 export type LiveAudioState = 'disconnected' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export interface LiveAudioCallbacks {
@@ -64,8 +66,7 @@ export class LiveAudioService {
 
       // 2. Connect WebSocket with selected voice
       const preferredVoice = localStorage.getItem('thoth_selected_voice') || 'Puck';
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/live-audio?model=${encodeURIComponent(model)}&voice=${encodeURIComponent(preferredVoice)}`;
+      const wsUrl = liveWsUrl(`/api/live-audio?model=${encodeURIComponent(model)}&voice=${encodeURIComponent(preferredVoice)}`);
       
       this.ws = new WebSocket(wsUrl);
 
