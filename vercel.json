@@ -5,7 +5,7 @@
   "buildCommand": "npm run vercel:build",
   "functions": {
     "api/index.mjs": {
-      "maxDuration": 60
+      "maxDuration": 300
     }
   },
   "rewrites": [
