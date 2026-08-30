@@ -82,6 +82,9 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // Echo protection: mic gating timestamps (ms) — prevents the translator from hearing its own output
+  const micOpenTimeRef = useRef<number>(0);
+  const lastPlaybackEndRef = useRef<number>(0);
 
   // Dialect modal state
   const [isDialectModalOpen, setIsDialectModalOpen] = useState(false);
@@ -298,6 +301,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
 
       activeSourcesRef.current.push(source);
       source.onended = () => {
+        lastPlaybackEndRef.current = performance.now();
         activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
       };
     } catch (e) {
@@ -365,6 +369,16 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
             await startLiveMicStream();
           } else if (msg.type === 'translated_text' && msg.text) {
             setTranslatedText(prev => prev ? prev + ' ' + msg.text : msg.text);
+          } else if (msg.type === 'interrupted') {
+            // Model detected an interruption: stop queued playback so it can speak fresh audio
+            activeSourcesRef.current.forEach(source => {
+              try { source.stop(); } catch (e) {}
+            });
+            activeSourcesRef.current = [];
+            lastPlaybackEndRef.current = performance.now();
+            if (outputAudioCtxRef.current) {
+              nextPlayTimeRef.current = outputAudioCtxRef.current.currentTime;
+            }
           } else if (msg.type === 'audio' && msg.audio) {
             playAudioChunk(msg.audio);
           } else if (msg.type === 'guest_limit_reached') {
@@ -413,6 +427,8 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
       }
+      // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
+      micOpenTimeRef.current = performance.now();
 
       const source = audioCtx.createMediaStreamSource(stream);
       const processor = audioCtx.createScriptProcessor(2048, 1, 1);
@@ -429,7 +445,25 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       processor.onaudioprocess = (e) => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
+        const nowMs = performance.now();
+
+        // Drop the mic-open pop / "recording start" artifact so the model never hears it
+        if (nowMs - micOpenTimeRef.current < 600) return;
+
+        // Half-duplex guard: never feed the translator its own spoken output echo
+        if (activeSourcesRef.current.length > 0) {
+          lastPlaybackEndRef.current = nowMs;
+          return;
+        }
+        // Short tail after playback ends so speaker echo/reverb decays before mic reopens
+        if (nowMs - lastPlaybackEndRef.current < 300) return;
+
         const inputData = e.inputBuffer.getChannelData(0);
+
+        // Gentle noise gate: skip near-silence so background hum never triggers false turns
+        let gateSum = 0;
+        for (let i = 0; i < inputData.length; i++) gateSum += inputData[i] * inputData[i];
+        if (Math.sqrt(gateSum / inputData.length) < 0.004) return;
         
         // Convert Float32Array to Int16Array PCM
         const pcm16 = new Int16Array(inputData.length);

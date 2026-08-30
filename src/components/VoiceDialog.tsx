@@ -61,6 +61,10 @@ export function VoiceDialog({
   const inputAudioCtxRef = useRef<AudioContext | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
+  // Echo protection: mic gating timestamps (ms) — prevents the model from hearing its own voice
+  const micOpenTimeRef = useRef<number>(0);
+  const lastPlaybackEndRef = useRef<number>(0);
+
   const outputAudioCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
@@ -94,6 +98,7 @@ export function VoiceDialog({
       try { source.stop(); } catch (e) {}
     });
     activeSourcesRef.current = [];
+    lastPlaybackEndRef.current = performance.now();
     if (outputAudioCtxRef.current) {
       nextPlayTimeRef.current = outputAudioCtxRef.current.currentTime;
     }
@@ -140,6 +145,7 @@ export function VoiceDialog({
       setVoiceState('speaking');
 
       source.onended = () => {
+        lastPlaybackEndRef.current = performance.now();
         activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
         if (activeSourcesRef.current.length === 0) {
           setVoiceState('listening');
@@ -234,7 +240,7 @@ export function VoiceDialog({
   // Local client timer for guest countdown during active session
   useEffect(() => {
     let interval: any = null;
-    if (isGuest && voiceState === 'listening' || voiceState === 'speaking') {
+    if (isGuest && (voiceState === 'listening' || voiceState === 'speaking')) {
       interval = setInterval(() => {
         setGuestRemainingSeconds(prev => {
           if (prev <= 1) {
@@ -394,6 +400,8 @@ export function VoiceDialog({
       if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
       }
+      // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
+      micOpenTimeRef.current = performance.now();
 
       if (!isSessionActiveRef.current) {
         stream.getTracks().forEach(t => {
@@ -423,7 +431,25 @@ export function VoiceDialog({
         if (!isSessionActiveRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
         if (isMutedRef.current) return;
 
+        const nowMs = performance.now();
+
+        // Drop the mic-open pop / "recording start" artifact so the model never hears it
+        if (nowMs - micOpenTimeRef.current < 600) return;
+
+        // Half-duplex guard: never feed the model its own voice echo while the assistant speaks
+        if (activeSourcesRef.current.length > 0) {
+          lastPlaybackEndRef.current = nowMs;
+          return;
+        }
+        // Short tail after playback ends so speaker echo/reverb decays before mic reopens
+        if (nowMs - lastPlaybackEndRef.current < 300) return;
+
         const inputData = e.inputBuffer.getChannelData(0);
+
+        // Gentle noise gate: skip near-silence so background hum/noise never confuses the model
+        let gateSum = 0;
+        for (let i = 0; i < inputData.length; i++) gateSum += inputData[i] * inputData[i];
+        if (Math.sqrt(gateSum / inputData.length) < 0.004) return;
         
         // Convert Float32Array to Int16Array PCM
         const pcm16 = new Int16Array(inputData.length);

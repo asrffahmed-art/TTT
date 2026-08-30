@@ -24,6 +24,15 @@ export class LiveAudioService {
   private callbacks: LiveAudioCallbacks;
   private activeModel: string = 'gemini-3.1-flash-live-preview';
 
+  // Output playback (raw PCM queue via WebAudio)
+  private outputAudioCtx: AudioContext | null = null;
+  private nextPlayTime: number = 0;
+  private queuedSources: AudioBufferSourceNode[] = [];
+
+  // Echo protection: mic gating timestamps (ms) — prevents the model from hearing its own voice
+  private micOpenTime: number = 0;
+  private lastPlaybackEndTime: number = 0;
+
   constructor(callbacks: LiveAudioCallbacks) {
     this.callbacks = callbacks;
   }
@@ -119,6 +128,8 @@ export class LiveAudioService {
       if (this.inputAudioCtx.state === 'suspended') {
         this.inputAudioCtx.resume();
       }
+      // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
+      this.micOpenTime = performance.now();
 
       const source = this.inputAudioCtx.createMediaStreamSource(this.mediaStream);
       this.scriptProcessor = this.inputAudioCtx.createScriptProcessor(2048, 1, 1);
@@ -140,8 +151,21 @@ export class LiveAudioService {
           this.callbacks.onVolumeChange(volLevel);
         }
 
+        const nowMs = performance.now();
+
+        // Drop the mic-open pop / "recording start" artifact so the model never hears it
+        if (nowMs - this.micOpenTime < 600) return;
+
         // Don't send mic audio when the assistant is currently speaking to prevent echo
-        if (this.state === 'speaking') return;
+        if (this.state === 'speaking') {
+          this.lastPlaybackEndTime = nowMs;
+          return;
+        }
+        // Short tail after playback ends so speaker echo/reverb decays before mic reopens
+        if (nowMs - this.lastPlaybackEndTime < 300) return;
+
+        // Gentle noise gate: skip near-silence so background hum never confuses the model
+        if (rms < 0.004) return;
 
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
@@ -169,10 +193,9 @@ export class LiveAudioService {
     if (!this.isRunning) return;
 
     switch (msg.type) {
-      case 'state':
-        if (msg.state === 'thinking') {
-          this.setState('thinking');
-        }
+      case 'text':
+        // Real protocol: model text part from Gemini Live
+        this.callbacks.onTranscript?.(msg.text, false);
         break;
 
       case 'input_text':
@@ -182,21 +205,36 @@ export class LiveAudioService {
       case 'output_text':
         this.callbacks.onTranscript?.(msg.text, false);
         if (msg.audio) {
-          this.playAudioData(msg.audio, 'audio/wav');
+          this.playWavData(msg.audio);
+        }
+        break;
+
+      case 'interrupted':
+        this.stopCurrentAudio();
+        if (this.isRunning && this.state !== 'error') {
+          this.setState('listening');
         }
         break;
 
       case 'audio':
-        if (msg.data) {
-          this.playAudioData(msg.data, 'audio/wav');
+        // Real protocol: raw PCM chunk (audio/pcm;rate=24000) from Gemini Live passthrough
+        if (msg.audio) {
+          this.playPcmChunk(msg.audio, msg.mimeType);
+        } else if (msg.data) {
+          this.playWavData(msg.data);
         }
+        break;
+
+      case 'guest_limit_reached':
+        this.setState('error', msg.message || 'انتهت مدة الاستخدام اليومية للصوت المباشر');
+        this.disconnect();
         break;
 
       case 'turn_complete':
         break;
 
       case 'error':
-        this.setState('error', msg.error || 'حدث خطأ في الجلسة المباشرة');
+        this.setState('error', msg.error || msg.message || 'حدث خطأ في الجلسة المباشرة');
         break;
 
       default:
@@ -204,36 +242,107 @@ export class LiveAudioService {
     }
   }
 
-  private playAudioData(base64Data: string, mimeType: string = 'audio/wav') {
-    if (!this.isRunning) return;
+  private ensureOutputCtx(): AudioContext | null {
+    try {
+      if (!this.outputAudioCtx || this.outputAudioCtx.state === 'closed') {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        this.outputAudioCtx = new AudioCtx();
+        this.nextPlayTime = 0;
+      }
+      if (this.outputAudioCtx.state === 'suspended') {
+        this.outputAudioCtx.resume().catch(() => {});
+      }
+      return this.outputAudioCtx;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  private base64ToUint8(base64Data: string): Uint8Array {
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  /** Plays a raw PCM16 chunk (audio/pcm;rate=NNNNN) through a queued WebAudio graph. */
+  private playPcmChunk(base64Data: string, mimeType?: string) {
+    if (!this.isRunning || !base64Data) return;
+
+    try {
+      const rateMatch = /rate=(\d+)/.exec(mimeType || '');
+      const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+
+      const bytes = this.base64ToUint8(base64Data);
+      if (bytes.byteLength < 2) return;
+
+      const int16 = new Int16Array(bytes.buffer, 0, Math.floor(bytes.byteLength / 2));
+      if (int16.length === 0) return;
+
+      const ctx = this.ensureOutputCtx();
+      if (!ctx) return;
+
+      const float32Data = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        float32Data[i] = int16[i] / 32768.0;
+      }
+
+      const audioBuffer = ctx.createBuffer(1, float32Data.length, sampleRate);
+      audioBuffer.getChannelData(0).set(float32Data);
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+
+      const currentTime = ctx.currentTime;
+      // If queue is empty or lagged behind, sync playback time to current time + 20ms
+      if (this.queuedSources.length === 0 || this.nextPlayTime < currentTime) {
+        this.nextPlayTime = currentTime + 0.02;
+      }
+
+      const startTime = this.nextPlayTime;
+      source.start(startTime);
+      this.setState('speaking');
+
+      source.onended = () => {
+        this.queuedSources = this.queuedSources.filter(s => s !== source);
+        if (this.queuedSources.length === 0 && this.isRunning) {
+          this.lastPlaybackEndTime = performance.now();
+          this.setState('listening');
+        }
+      };
+
+      this.queuedSources.push(source);
+      this.nextPlayTime = startTime + audioBuffer.duration;
+    } catch (err) {
+      console.warn('PCM playback notice:', err);
+    }
+  }
+
+  /** Legacy path: plays a full WAV file (base64) as an HTMLAudio element. */
+  private playWavData(base64Data: string) {
+    if (!this.isRunning || !base64Data) return;
 
     this.stopCurrentAudio();
     this.setState('speaking');
 
     try {
-      const audio = new Audio(`data:${mimeType};base64,${base64Data}`);
+      const audio = new Audio(`data:audio/wav;base64,${base64Data}`);
       this.currentAudio = audio;
 
-      audio.onended = () => {
+      const finish = () => {
+        this.lastPlaybackEndTime = performance.now();
         this.currentAudio = null;
-        if (this.isRunning) {
+        if (this.isRunning && this.queuedSources.length === 0) {
           this.setState('listening');
         }
       };
 
-      audio.onerror = () => {
-        this.currentAudio = null;
-        if (this.isRunning) {
-          this.setState('listening');
-        }
-      };
-
-      audio.play().catch(() => {
-        this.currentAudio = null;
-        if (this.isRunning) {
-          this.setState('listening');
-        }
-      });
+      audio.onended = finish;
+      audio.onerror = finish;
+      audio.play().catch(finish);
     } catch (err) {
       this.currentAudio = null;
       if (this.isRunning) {
@@ -243,6 +352,16 @@ export class LiveAudioService {
   }
 
   public stopCurrentAudio() {
+    if (this.queuedSources.length > 0) {
+      this.queuedSources.forEach(source => {
+        try { source.stop(); } catch (e) {}
+      });
+      this.queuedSources = [];
+      this.lastPlaybackEndTime = performance.now();
+      if (this.outputAudioCtx && this.outputAudioCtx.state !== 'closed') {
+        this.nextPlayTime = this.outputAudioCtx.currentTime;
+      }
+    }
     if (this.currentAudio) {
       try {
         this.currentAudio.pause();
@@ -283,6 +402,14 @@ export class LiveAudioService {
       } catch (e) {}
       this.inputAudioCtx = null;
     }
+
+    if (this.outputAudioCtx) {
+      try {
+        this.outputAudioCtx.close().catch(() => {});
+      } catch (e) {}
+      this.outputAudioCtx = null;
+    }
+    this.queuedSources = [];
 
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach(track => {
