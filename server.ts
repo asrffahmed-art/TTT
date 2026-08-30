@@ -894,7 +894,9 @@ async function generateContentWithTracking(
       else initialModel = 'gemma-4-26b-a4b-it';
     }
 
-    const candidateModels = [
+    const candidateModels = (requestParams as any).singleModel
+      ? [initialModel]
+      : [
       initialModel,
       initialModel === 'gemma-4-31b-it' ? 'gemma-4-26b-a4b-it' : 'gemma-4-31b-it',
       'gemini-3.7-flash',
@@ -1217,7 +1219,10 @@ async function routeUnderstandingTask({
           contents,
           config: systemInstruction ? { systemInstruction } : undefined,
           ...(deadline ? { deadline } : {}),
-          ...(perAttemptMs ? { perAttemptMs } : {})
+          ...(perAttemptMs ? { perAttemptMs } : {}),
+          // With an explicit modelChain the OUTER router owns fallbacks — the
+          // tracking call must not silently chain through other models.
+          ...(modelChain ? { singleModel: true } : {})
         });
 
         if (response && response.text) {
