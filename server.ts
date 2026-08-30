@@ -904,10 +904,41 @@ async function generateContentWithTracking(
     ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
     let lastErr: any = null;
 
+    // Hard deadline for this generation chain. Callers may pass an absolute
+    // route-level deadline (params.deadline); otherwise assume a 55s budget so
+    // the chain of slow/hanging model calls can never hit the platform limit.
+    const deadline: number = Number((requestParams as any).deadline) || (start + 55000);
+
     for (const mod of candidateModels) {
+      const remainingBudget = deadline - Date.now();
+      if (remainingBudget < 5000) {
+        console.warn(`generateContentWithTracking: out of time budget, stopping before model ${mod}`);
+        break;
+      }
       try {
-        const attemptParams = { ...requestParams, model: mod };
-        response = await ai.models.generateContent(attemptParams);
+        const attemptParams = { ...requestParams, model: mod } as any;
+        // thinkingConfig is only supported by Gemini models — passing it to a
+        // Gemma model makes the call hang until timeout. Strip it for Gemma.
+        if (mod.startsWith('gemma') && attemptParams.config?.thinkingConfig) {
+          const { thinkingConfig: _strippedThinking, ...restConfig } = attemptParams.config;
+          attemptParams.config = restConfig;
+        }
+        delete attemptParams.deadline;
+        // Per-attempt timeout: a hanging model call must not eat the whole budget
+        const attemptTimeoutMs = Math.max(5000, Math.min(45000, remainingBudget - 2000));
+        let timerRef: any = null;
+        const genPromise: Promise<any> = ai.models.generateContent(attemptParams);
+        genPromise.catch(() => {}); // no unhandled rejection if the timeout wins the race
+        response = await Promise.race([
+          genPromise,
+          new Promise((_, rej) => {
+            timerRef = setTimeout(() => rej(Object.assign(
+              new Error(`Model ${mod} did not respond within ${Math.round(attemptTimeoutMs / 1000)}s`),
+              { status: 504, timedOut: true }
+            )), attemptTimeoutMs);
+          })
+        ]);
+        clearTimeout(timerRef);
         if (response && response.text) {
           success = true;
           break;
@@ -3397,10 +3428,12 @@ ${sourcesPromptContext}
       }
 
       if (mode === 'thinking') {
+        // Real "thinking" semantics: a Gemini thinking-capable model first.
+        // (Gemma models do not support thinkingConfig — passing it hangs the call.)
         genConfig.thinkingConfig = { thinkingLevel: "HIGH" };
-        primaryModel = "gemma-4-31b-it";
-        secondaryModel = "gemma-4-26b-a4b-it";
-        tertiaryModel = "gemini-3.7-flash";
+        primaryModel = "gemini-3.7-flash";
+        secondaryModel = "gemma-4-31b-it";
+        tertiaryModel = "gemma-4-26b-a4b-it";
       } else if (mode === 'fast') {
         primaryModel = "gemma-4-26b-a4b-it";
         secondaryModel = "gemma-4-31b-it";
@@ -3415,9 +3448,16 @@ ${sourcesPromptContext}
       // Helper function to try generating content with fallback models and retry on 429 / 503
       const tryGenerate = async (models: string[]) => {
         let lastError: any = null;
+        // Hard deadline for the whole model chain: the response must complete
+        // within the serverless function time limit (60s on this plan).
+        const chatDeadline = Date.now() + 55000;
         // Prioritize Gemma 4 26B as the immediate limit fallback
         const candidateModelList = [...new Set([...models, 'gemma-4-26b-a4b-it', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview'])];
         for (const model of candidateModelList) {
+          if (Date.now() > chatDeadline - 5000) {
+            console.warn('tryGenerate: out of time budget, stopping before model', model);
+            break;
+          }
           // If fallback model is 26B when 31B hit limits, try directly
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
@@ -3426,7 +3466,8 @@ ${sourcesPromptContext}
               const response = await generateContentWithTracking({
                 model,
                 contents: normalized,
-                config: currentConfig
+                config: currentConfig,
+                deadline: chatDeadline
               });
               if (response && response.text) {
                 const usedName = model.includes('31b') ? "Gemma 4 31B" : model.includes('26b') ? "Gemma 4 26B" : "Gemma 4 26B";

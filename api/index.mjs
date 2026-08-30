@@ -1266,10 +1266,35 @@ async function startServer() {
         "gemini-3.1-pro-preview"
       ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
       let lastErr = null;
+      const deadline = Number(requestParams.deadline) || start + 55e3;
       for (const mod of candidateModels) {
+        const remainingBudget = deadline - Date.now();
+        if (remainingBudget < 5e3) {
+          console.warn(`generateContentWithTracking: out of time budget, stopping before model ${mod}`);
+          break;
+        }
         try {
           const attemptParams = { ...requestParams, model: mod };
-          response = await ai.models.generateContent(attemptParams);
+          if (mod.startsWith("gemma") && attemptParams.config?.thinkingConfig) {
+            const { thinkingConfig: _strippedThinking, ...restConfig } = attemptParams.config;
+            attemptParams.config = restConfig;
+          }
+          delete attemptParams.deadline;
+          const attemptTimeoutMs = Math.max(5e3, Math.min(45e3, remainingBudget - 2e3));
+          let timerRef = null;
+          const genPromise = ai.models.generateContent(attemptParams);
+          genPromise.catch(() => {
+          });
+          response = await Promise.race([
+            genPromise,
+            new Promise((_, rej) => {
+              timerRef = setTimeout(() => rej(Object.assign(
+                new Error(`Model ${mod} did not respond within ${Math.round(attemptTimeoutMs / 1e3)}s`),
+                { status: 504, timedOut: true }
+              )), attemptTimeoutMs);
+            })
+          ]);
+          clearTimeout(timerRef);
           if (response && response.text) {
             success = true;
             break;
@@ -3259,9 +3284,9 @@ ${sourcesPromptContext}
       }
       if (mode === "thinking") {
         genConfig.thinkingConfig = { thinkingLevel: "HIGH" };
-        primaryModel = "gemma-4-31b-it";
-        secondaryModel = "gemma-4-26b-a4b-it";
-        tertiaryModel = "gemini-3.7-flash";
+        primaryModel = "gemini-3.7-flash";
+        secondaryModel = "gemma-4-31b-it";
+        tertiaryModel = "gemma-4-26b-a4b-it";
       } else if (mode === "fast") {
         primaryModel = "gemma-4-26b-a4b-it";
         secondaryModel = "gemma-4-31b-it";
@@ -3273,15 +3298,21 @@ ${sourcesPromptContext}
       }
       const tryGenerate = async (models) => {
         let lastError = null;
+        const chatDeadline = Date.now() + 55e3;
         const candidateModelList = [.../* @__PURE__ */ new Set([...models, "gemma-4-26b-a4b-it", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"])];
         for (const model of candidateModelList) {
+          if (Date.now() > chatDeadline - 5e3) {
+            console.warn("tryGenerate: out of time budget, stopping before model", model);
+            break;
+          }
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
               const currentConfig = { ...genConfig };
               const response = await generateContentWithTracking({
                 model,
                 contents: normalized,
-                config: currentConfig
+                config: currentConfig,
+                deadline: chatDeadline
               });
               if (response && response.text) {
                 const usedName = model.includes("31b") ? "Gemma 4 31B" : model.includes("26b") ? "Gemma 4 26B" : "Gemma 4 26B";
