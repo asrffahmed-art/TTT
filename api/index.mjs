@@ -1269,6 +1269,10 @@ async function startServer() {
       for (const mod of candidateModels) {
         try {
           const attemptParams = { ...requestParams, model: mod };
+          if (mod && mod.startsWith("gemma") && attemptParams.config?.thinkingConfig) {
+            const { thinkingConfig, ...restConfig } = attemptParams.config;
+            attemptParams.config = restConfig;
+          }
           response = await ai.models.generateContent(attemptParams);
           if (response && response.text) {
             success = true;

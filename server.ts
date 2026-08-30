@@ -907,6 +907,15 @@ async function generateContentWithTracking(
     for (const mod of candidateModels) {
       try {
         const attemptParams = { ...requestParams, model: mod };
+        // COMPATIBILITY GUARD (no settings change): Gemma models do not support
+        // thinkingConfig — passing it makes the SDK call hang until timeout.
+        // Strip it for Gemma only; Gemini models receive the caller's
+        // thinkingConfig exactly as provided. Model chains, order, and levels
+        // are untouched.
+        if (mod && mod.startsWith('gemma') && attemptParams.config?.thinkingConfig) {
+          const { thinkingConfig, ...restConfig } = attemptParams.config;
+          attemptParams.config = restConfig;
+        }
         response = await ai.models.generateContent(attemptParams);
         if (response && response.text) {
           success = true;
