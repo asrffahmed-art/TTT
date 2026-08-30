@@ -31,14 +31,15 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "Deployed to: $URL"
 
-      - name: Health check (API on new deployment)
+      - name: Health check (production domain)
         run: |
-          URL="${{ steps.deploy.outputs.url }}"
-          for i in 1 2 3 4 5; do
-            CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL/api/health" || true)
-            if [ "$CODE" = "200" ]; then
-              echo "Health check passed (200)"; cat /tmp/health.json; exit 0
+          # NOTE: *.vercel.app deployment URLs are SSO-protected (302) on this plan;
+          # the custom production domain is not. Check the real user-facing URL.
+          for i in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" "https://thothai.site/api/health" || true)
+            if [ "$CODE" = "200" ] && grep -q '"status":"ok"' /tmp/health.json; then
+              echo "Production health check passed (200, status=ok)"; cat /tmp/health.json; exit 0
             fi
             echo "Attempt $i -> $CODE, retrying in 10s..."; sleep 10
           done
-          echo "::error::Health check failed on $URL"; exit 1
+          echo "::error::Production health check failed"; cat /tmp/health.json 2>/dev/null; exit 1
