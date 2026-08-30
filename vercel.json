@@ -2,8 +2,9 @@
   "version": 2,
   "cleanUrls": true,
   "regions": ["iad1"],
+  "buildCommand": "npm run vercel:build",
   "functions": {
-    "api/index.ts": {
+    "api/index.mjs": {
       "maxDuration": 60
     }
   },

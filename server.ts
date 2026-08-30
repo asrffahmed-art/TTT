@@ -2,7 +2,14 @@ import express from "express";
 import http from "http";
 import path from "path";
 import fs from "fs";
+import dns from "dns";
 import nodemailer from "nodemailer";
+
+// Prefer IPv4 DNS results — some serverless sandboxes have no outbound IPv6
+// route, and gRPC transports that try AAAA records first can fail with
+// "socket disconnected before secure TLS connection was established".
+try { dns.setDefaultResultOrder("ipv4first"); } catch { /* older Node */ }
+
 import { WebSocketServer, WebSocket } from "ws";
 // NOTE: vite is intentionally NOT statically imported here.
 // It is only needed for the dev middleware branch (see startServer), and a
@@ -13,7 +20,8 @@ import { initializeApp as initFirebaseAdmin, getApps as getAdminApps } from "fir
 import { getMessaging } from "firebase-admin/messaging";
 import { initializeApp as initWebFirebase, getApps as getWebApps } from "firebase/app";
 import { 
-  getFirestore as getWebFirestore, 
+  initializeFirestore as initializeWebFirestore, 
+  experimentalForceLongPolling,
   collection, 
   doc, 
   getDoc, 
@@ -44,7 +52,15 @@ if (!getAdminApps().length) {
 
 // Initialize Web Firebase Client SDK for Firestore Operations (bypasses gRPC IAM auth using API Key & Rules)
 const webApp = getWebApps().length > 0 ? getWebApps()[0] : initWebFirebase(firebaseConfig);
-const dbWeb = getWebFirestore(webApp, firebaseConfig.firestoreDatabaseId);
+// NOTE: getFirestore() uses gRPC, whose long-lived HTTP/2 connections are
+// blocked/unreliable inside serverless sandboxes (AWS Lambda / Vercel) —
+// resulting in "client is offline" / UNAVAILABLE errors. Long-polling uses
+// plain HTTPS/1.1 which works everywhere.
+const dbWeb = initializeWebFirestore(
+  webApp,
+  { experimentalForceLongPolling: true },
+  firebaseConfig.firestoreDatabaseId
+);
 
 async function safeFetchJson<T = any>(res: Response, fallback: any = {}): Promise<T> {
   try {
@@ -4139,13 +4155,37 @@ ${searchContext}
       const dbConnected = !!dbWeb;
       const dbKeys = await getDbApiKeys().catch(() => ({}));
       const geminiConfigured = !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.API_KEY || (dbKeys as any)?.geminiApiKey);
+
+      // Raw network connectivity diagnostics (useful in serverless sandboxes)
+      const targets: Record<string, string> = {
+        firestore: "https://firestore.googleapis.com/",
+        identitytoolkit: "https://identitytoolkit.googleapis.com/",
+        generativelanguage: "https://generativelanguage.googleapis.com/v1beta/models",
+        firebasestorage: "https://firebasestorage.googleapis.com/"
+      };
+      const network: Record<string, any> = {};
+      await Promise.all(Object.entries(targets).map(async ([name, url]) => {
+        const started = Date.now();
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 8000);
+          const r = await fetch(url, { signal: ctrl.signal, method: "GET" });
+          clearTimeout(timer);
+          network[name] = { ok: true, status: r.status, ms: Date.now() - started };
+        } catch (e: any) {
+          network[name] = { ok: false, error: String(e?.message || e), ms: Date.now() - started };
+        }
+      }));
+
       res.json({
         status: "ok",
         timestamp: new Date().toISOString(),
+        region: process.env.VERCEL_REGION || "unknown",
         services: {
           database: dbConnected ? "connected" : "disconnected",
           gemini: geminiConfigured ? "configured" : "missing_key"
-        }
+        },
+        network
       });
     } catch (err: any) {
       res.status(500).json({ status: "error", message: err?.message || "Health check failed" });

@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+api/index.mjs
+api/index.mjs.map
+*.tsbuildinfo
