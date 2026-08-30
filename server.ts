@@ -1168,7 +1168,8 @@ async function routeUnderstandingTask({
   systemInstruction,
   userId,
   deadline,
-  perAttemptMs
+  perAttemptMs,
+  modelChain
 }: {
   task: string;
   requiredCapabilities: ('text' | 'image' | 'video' | 'audio' | 'pdf' | 'youtube' | 'extraction' | 'summarization')[];
@@ -1177,21 +1178,26 @@ async function routeUnderstandingTask({
   userId?: string;
   deadline?: number;
   perAttemptMs?: number;
+  modelChain?: string[];
 }): Promise<{ text: string; modelUsed: string }> {
-  const eligibleModels = MODEL_CAPABILITY_REGISTRY
-    .filter(m => m.role === 'understanding' && requiredCapabilities.every(c => m.capabilities.includes(c)))
-    .sort((a, b) => b.priority - a.priority);
-
-  if (eligibleModels.length === 0) {
-    eligibleModels.push(...MODEL_CAPABILITY_REGISTRY.filter(m => m.role === 'understanding').sort((a, b) => b.priority - a.priority));
+  // Callers may pass an explicit model chain (e.g. the audio pipeline uses the
+  // same proven fast chain as web-search synthesis). Otherwise the capability
+  // registry decides, as before.
+  const modelIds: string[] = modelChain && modelChain.length > 0
+    ? modelChain
+    : MODEL_CAPABILITY_REGISTRY
+        .filter(m => m.role === 'understanding' && requiredCapabilities.every(c => m.capabilities.includes(c)))
+        .sort((a, b) => b.priority - a.priority)
+        .map(m => m.id);
+  if (modelIds.length === 0) {
+    modelIds.push(...MODEL_CAPABILITY_REGISTRY.filter(m => m.role === 'understanding').sort((a, b) => b.priority - a.priority).map(m => m.id));
   }
 
   let lastErr: any = null;
   const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-  for (let i = 0; i < eligibleModels.length; i++) {
-    const modelEntry = eligibleModels[i];
-    const modelId = modelEntry.id;
+  for (let i = 0; i < modelIds.length; i++) {
+    const modelId = modelIds[i];
     const startTime = Date.now();
 
     // Respect the caller's shared time budget (e.g. the audio pipeline must
@@ -2217,7 +2223,8 @@ async function generateSpokenScript({
   sourceType,
   title,
   intentType,
-  deadline
+  deadline,
+  modelChain
 }: {
   summaryOrContent: string;
   profile: VoiceProfile;
@@ -2225,6 +2232,7 @@ async function generateSpokenScript({
   title?: string;
   intentType?: string;
   deadline?: number;
+  modelChain?: string[];
 }): Promise<string> {
   const isQuestions = intentType && ['questions_mcq', 'questions_comprehension', 'questions_review', 'questions_exam', 'questions_general'].includes(intentType);
   const isNotes = intentType === 'audio_notes' || intentType === 'key_points_notes';
@@ -2276,7 +2284,9 @@ ${summaryOrContent}`;
       requiredCapabilities: ['text', 'summarization'],
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       systemInstruction: 'أنت خبير إعداد النصوص الإذاعية والتسجيلات الصوتية التعليمية لمنصة THOTH.',
-      deadline
+      deadline,
+      perAttemptMs: 12000,
+      modelChain
     });
 
     let script = res.text.replace(/[#*`_~>\[\]]/g, '').trim();
@@ -3078,7 +3088,8 @@ User request: "${userQuery}"` }] }],
             contents: understandingContents,
             systemInstruction,
             deadline: audioDeadline,
-            perAttemptMs: 25000
+            perAttemptMs: 20000,
+            modelChain: ['gemma-4-26b-a4b-it', 'gemma-4-31b-it', 'gemini-3.7-flash']
           });
 
           let rawContent = understandingRes.text || "تم تحليل المحتوى بنجاح.";
@@ -3117,7 +3128,8 @@ User request: "${userQuery}"` }] }],
             sourceType: intent.sourceType,
             title: sourceTitle,
             intentType: intent.intentType,
-            deadline: audioDeadline
+            deadline: audioDeadline,
+            modelChain: ['gemma-4-26b-a4b-it', 'gemini-3.1-flash-lite']
           });
 
           // 4. Multi-Model TTS Synthesis (parallel chunks, budget-aware)
