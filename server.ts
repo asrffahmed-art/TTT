@@ -4,7 +4,10 @@ import path from "path";
 import fs from "fs";
 import nodemailer from "nodemailer";
 import { WebSocketServer, WebSocket } from "ws";
-import { createServer as createViteServer } from "vite";
+// NOTE: vite is intentionally NOT statically imported here.
+// It is only needed for the dev middleware branch (see startServer), and a
+// static import would pull the entire vite bundle into the serverless
+// function build. Use a dynamic import inside the dev branch instead.
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { initializeApp as initFirebaseAdmin, getApps as getAdminApps } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
@@ -9343,6 +9346,7 @@ app.all("/api/*", (req, res) => {
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
