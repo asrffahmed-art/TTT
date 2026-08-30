@@ -6,6 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
-api/index.mjs
+# api/index.mjs IS committed: Vercel validates `functions` patterns against
+# the uploaded file list BEFORE running buildCommand. It is regenerated
+# fresh by `npm run vercel:build` (scripts/build-api.cjs) on every deploy.
 api/index.mjs.map
 *.tsbuildinfo
