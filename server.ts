@@ -9686,8 +9686,6 @@ app.all("/api/*", (req, res) => {
           },
           callbacks: {
             onmessage: (message: LiveServerMessage) => {
-              // TEMP diagnostic: raw shape visibility for native-audio models (remove after fix)
-              try { console.log("[LIVE-DBG]", JSON.stringify(message).slice(0, 400)); } catch (e) {}
               if ((message as any).setupComplete) {
                 console.log("[GEMINI LIVE] Setup complete from callback");
                 if (ws.readyState === WebSocket.OPEN) {
