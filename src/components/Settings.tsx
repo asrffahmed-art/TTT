@@ -14,6 +14,7 @@ import {
   saveUserNotificationSettings, 
   triggerTestPushNotification, 
   triggerDailyNotificationEngine, 
+  getIOSNotificationSupport,
   TOPIC_LABELS, 
   UserNotificationSettings 
 } from '../services/notificationService';
@@ -59,6 +60,9 @@ export function Settings({ onClose, onLogout, onOpenSubscription, onOpenAdminPan
   const [isTestingPush, setIsTestingPush] = useState(false);
   const [isTestingEngine, setIsTestingEngine] = useState(false);
   const [engineResult, setEngineResult] = useState<string | null>(null);
+  // [iOS-DIAG] Detect the exact iOS push capability once per render.
+  // On non-iOS platforms this returns isIOS=false and renders nothing below.
+  const iosNotifSupport = getIOSNotificationSupport();
 
   useEffect(() => {
     if (currentUser) {
@@ -86,11 +90,10 @@ export function Settings({ onClose, onLogout, onOpenSubscription, onOpenAdminPan
     const updated = { ...notifSettings, dailyEnabled: enabled };
     setNotifSettings(updated);
     if (currentUser) {
-      await saveUserNotificationSettings(currentUser.uid, { dailyEnabled: enabled });
-      showToast(enabled ? 'تم تفعيل استقبال الإشعارات اليومية' : 'تم تعطيل الإشعارات اليومية');
-      // Ask for the browser notification permission the moment the user turns
-      // notifications ON (this is a real user gesture, so the browser will
-      // actually show the prompt) — then register the FCM token.
+      // [iOS-FIX] WebKit only shows the permission prompt inside the tap's user
+      // gesture. The previous order (Firestore write first, ask later) broke
+      // the gesture chain on iOS — the prompt never appeared. Ask FIRST, then
+      // persist. Net behavior on Android/Web is identical.
       if (enabled && 'Notification' in window && Notification.permission === 'default') {
         const result = await requestNotificationPermission(currentUser.uid);
         if (result.success && result.token) {
@@ -102,6 +105,8 @@ export function Settings({ onClose, onLogout, onOpenSubscription, onOpenAdminPan
           showToast(result.error || 'لم يتم منح إذن الإشعارات.');
         }
       }
+      await saveUserNotificationSettings(currentUser.uid, { dailyEnabled: enabled });
+      showToast(enabled ? 'تم تفعيل استقبال الإشعارات اليومية' : 'تم تعطيل الإشعارات اليومية');
     }
   };
 
@@ -1055,6 +1060,21 @@ export function Settings({ onClose, onLogout, onOpenSubscription, onOpenAdminPan
                 <div className="w-11 h-6 bg-white/20 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-pink-500 peer-checked:to-purple-600"></div>
               </label>
             </div>
+
+            {/* [iOS-DIAG] iPhone-specific guidance — WebKit only allows web push
+                from a Home-Screen web app (iOS 16.4+). Hidden on all other platforms. */}
+            {iosNotifSupport.isIOS && !iosNotifSupport.pushCapable && (
+              <div className="mt-3 p-3 rounded-2xl bg-pink-500/10 border border-pink-500/30 text-[11px] text-white/70 leading-relaxed">
+                {iosNotifSupport.needsHomeScreenInstall
+                  ? '📱 على الآيفون: iOS بيسمح بالإشعارات بس لما THOTH يكون على الشاشة الرئيسية. افتح الموقع في Safari ← زر المشاركة ⬆️ ← «إضافة إلى الشاشة الرئيسية»، وافتح التطبيق من الأيقونة وفعّل الإشعارات من هنا تاني.'
+                  : '📱 نسخة iOS عندك (' + (iosNotifSupport.iosVersion ? `${iosNotifSupport.iosVersion.major}.${iosNotifSupport.iosVersion.minor}` : 'غير معروفة') + ') مش بتدعم إشعارات الويب — محتاج iOS 16.4 أو أحدث: الإعدادات ← عام ← تحديث البرامج.'}
+              </div>
+            )}
+            {iosNotifSupport.isIOS && iosNotifSupport.pushCapable && 'Notification' in window && Notification.permission === 'denied' && (
+              <div className="mt-3 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-white/70 leading-relaxed">
+                ⚠️ إذن الإشعارات مترفض من قبل. امسح تطبيق THOTH من الشاشة الرئيسية وضيفه تاني (Safari ← مشاركة ⬆️ ← إضافة إلى الشاشة الرئيسية) واضغط «السماح».
+              </div>
+            )}
 
           </div>
         </div>

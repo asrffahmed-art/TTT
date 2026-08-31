@@ -90,6 +90,120 @@ export function currentNotificationPermission(): NotificationPermission | 'unsup
   return Notification.permission;
 }
 
+// ============================================================================
+// [iOS-DIAG] iOS / iPadOS (WebKit) support detection — ADDITIVE ONLY.
+// Non-iOS platforms (Android / Windows / macOS Chrome…) get isIOS === false
+// and every existing code path keeps its exact previous behavior.
+// ----------------------------------------------------------------------------
+// WebKit platform rules that explain "iPhone gets no notifications":
+//   • The Push API is exposed ONLY to web apps added to the Home Screen
+//     (standalone mode) — never to regular Safari tabs, on any iOS version.
+//   • Web push itself shipped in iOS 16.4 — older versions cannot subscribe
+//     even from the Home Screen.
+//   • Notification.requestPermission() only shows the system prompt while
+//     handling a real user tap — "await something, then ask" silently no-ops.
+// ============================================================================
+
+export interface IOSNotificationSupport {
+  isIOS: boolean;
+  iosVersion: { major: number; minor: number } | null;
+  standalone: boolean;
+  pushAPIAvailable: boolean;
+  pushCapable: boolean;
+  needsHomeScreenInstall: boolean;
+  needsIOSUpdate: boolean;
+  reason: 'not-ios' | 'ios-outdated' | 'needs-home-screen' | 'unknown' | 'ok';
+}
+
+export function isIOSDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua)
+    || (/Macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1); // iPadOS 13+ desktop UA
+}
+
+export function getIOSVersion(): { major: number; minor: number } | null {
+  if (typeof navigator === 'undefined') return null;
+  const ua = navigator.userAgent || '';
+  if (!/iPad|iPhone|iPod/.test(ua)) return null; // Mac-masquerade UA carries no iPadOS version
+  const m = ua.match(/OS (\d+)[._](\d+)(?:[._](\d+))?/);
+  return m ? { major: parseInt(m[1], 10), minor: parseInt(m[2], 10) } : null;
+}
+
+export function isStandalonePWA(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const iosStandalone = (navigator as any).standalone === true;
+  const mqStandalone = typeof window.matchMedia === 'function'
+    && window.matchMedia('(display-mode: standalone)').matches;
+  return Boolean(iosStandalone || mqStandalone);
+}
+
+/**
+ * Detect the exact iOS notification state so the UI can guide the user
+ * instead of failing with a dead-end "not supported" error.
+ * PushManager availability is the ground truth; the version check only
+ * lets us EXPLAIN the failure ("update iOS") when the API is missing.
+ */
+export function getIOSNotificationSupport(): IOSNotificationSupport {
+  const standalone = isStandalonePWA();
+  if (!isIOSDevice()) {
+    return {
+      isIOS: false,
+      iosVersion: null,
+      standalone,
+      pushAPIAvailable: notificationsSupported(),
+      pushCapable: notificationsSupported(),
+      needsHomeScreenInstall: false,
+      needsIOSUpdate: false,
+      reason: 'not-ios'
+    };
+  }
+  const iosVersion = getIOSVersion();
+  const pushAPIAvailable = typeof window !== 'undefined'
+    && 'PushManager' in window
+    && 'serviceWorker' in navigator;
+  // WebKit shipped web push in iOS 16.4. If the UA carries no iOS version
+  // (iPadOS masquerading as macOS) we cannot blame the version — PushManager
+  // availability is the ground truth for capability, the version only explains.
+  const versionKnown = iosVersion !== null;
+  const versionOK = versionKnown
+    ? (iosVersion.major > 16 || (iosVersion.major === 16 && iosVersion.minor >= 4))
+    : true;
+  const pushCapable = pushAPIAvailable && standalone && versionOK;
+  let reason: IOSNotificationSupport['reason'] = 'ok';
+  if (!pushCapable) {
+    if (versionKnown && !versionOK) reason = 'ios-outdated';
+    else if (!standalone) reason = 'needs-home-screen';
+    else reason = 'unknown';
+  }
+  return {
+    isIOS: true,
+    iosVersion,
+    standalone,
+    pushAPIAvailable,
+    pushCapable,
+    // A Safari-tab user must be guided to install even though PushManager is
+    // absent *because* of the tab — so this does not require pushAPIAvailable.
+    needsHomeScreenInstall: versionOK && !standalone,
+    needsIOSUpdate: versionKnown && !versionOK,
+    reason
+  };
+}
+
+/** [iOS-DIAG] iOS-only console logging — visible in Safari inspector console. */
+export function logIOS(step: string, detail?: any): void {
+  if (!isIOSDevice()) return;
+  try {
+    if (detail !== undefined) console.log(`[iOS Notifications] ${step}:`, detail);
+    else console.log(`[iOS Notifications] ${step}`);
+  } catch { /* diagnostics must never throw */ }
+}
+
+/** Hostname of a push endpoint (web.push.apple.com ⇒ APNs-backed delivery). */
+function safeEndpointHost(endpoint: string): string {
+  try { return new URL(endpoint).hostname; } catch { return 'unknown-host'; }
+}
+
 /**
  * Register the notification Service Worker (idempotent).
  */
@@ -113,8 +227,16 @@ export async function requestNotificationPermission(userId: string): Promise<{ s
       return { success: false, error: 'المتصفح الحالي لا يدعم إشعارات Push.' };
     }
 
+    // [iOS-DIAG] Full-chain diagnostics (iOS-only console logs).
+    logIOS('Permission status', Notification.permission);
+    const iosState = getIOSNotificationSupport();
+    if (iosState.isIOS) {
+      logIOS('Device state', `iOS ${iosState.iosVersion ? iosState.iosVersion.major + '.' + iosState.iosVersion.minor : '?'} · standalone=${iosState.standalone} · pushAPI=${iosState.pushAPIAvailable} · reason=${iosState.reason}`);
+    }
+
     // Reuse an in-flight request (e.g. auto attempt + banner click racing).
     if (!pendingPermissionRequest) {
+      logIOS('Permission requested', 'yes — from user gesture');
       pendingPermissionRequest = (async () => {
         const permission = await Notification.requestPermission();
         return permission === 'granted';
@@ -122,13 +244,17 @@ export async function requestNotificationPermission(userId: string): Promise<{ s
     }
     const granted = await pendingPermissionRequest;
     pendingPermissionRequest = null;
+    logIOS('Permission result', granted ? 'granted' : (Notification.permission || 'denied'));
 
     if (!granted) {
+      logIOS('Flow stopped at: permission not granted');
       return { success: false, error: 'لم يتم منح إذن الإشعارات من قبل المستخدم.' };
     }
 
     // Register the service worker that will receive push events.
+    logIOS('SW registration started', NOTIFICATION_SW_PATH);
     const swReg = await registerNotificationSW();
+    logIOS('SW registration successful', swReg.scope);
 
     // Reuse the existing subscription only when it already uses our VAPID key.
     let sub = await swReg.pushManager.getSubscription();
@@ -155,12 +281,19 @@ export async function requestNotificationPermission(userId: string): Promise<{ s
     }
 
     const subscriptionJson = JSON.stringify(sub.toJSON());
+    // [iOS-DIAG] On iPhone the endpoint is web.push.apple.com — this IS the
+    // APNs-backed delivery path (WebKit maps the web subscription to APNs
+    // internally; no Apple Developer certificate is needed for web push).
+    const _epHost = safeEndpointHost(sub.endpoint);
+    logIOS('Push subscription endpoint', _epHost === 'web.push.apple.com' ? `${_epHost} (APNs-backed delivery)` : _epHost);
     // Persist the subscription (same collection as before — additive only).
     await saveNotificationToken(userId, subscriptionJson);
+    logIOS('Backend token registration', `users/${userId}/notificationTokens — saved`);
 
     return { success: true, token: subscriptionJson };
   } catch (err: any) {
     console.error('Error requesting notification permission:', err);
+    logIOS('Flow error', err?.message || String(err));
     return { success: false, error: err?.message || 'حدث خطأ أثناء تفعيل الإشعارات.' };
   }
 }
@@ -274,6 +407,7 @@ export function listenToForegroundMessages(onMessageCallback: (payload: any) => 
     const data = event.data;
     if (!data || data.type !== 'THOTH_PUSH') return;
     console.log('Foreground push received:', data.payload);
+    logIOS('Notification received (foreground)', data.payload?.notification?.title || '');
     onMessageCallback(data.payload);
   };
 

@@ -6,6 +6,12 @@
     <title>THOTH</title>
     <meta name="theme-color" content="#0b0d14" />
     <link rel="manifest" href="/manifest.webmanifest">
+    <!-- iOS PWA directives — required for reliable standalone (Home Screen)
+         mode, which is the ONLY WebKit context where Web Push works (iOS 16.4+) -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="THOTH" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">

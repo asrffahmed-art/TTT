@@ -9,6 +9,17 @@
 const DEFAULT_ICON = '/icons/icon-192.png';
 const DEFAULT_BADGE = '/icons/icon-192-maskable.png';
 
+// [iOS-DIAG] Platform tag for diagnostics. On iPhone/iPad, push events are
+// ONLY delivered to the Home-Screen web app (iOS 16.4+) — this log proves
+// when WebKit wakes this SW and hands us the APNs-backed push.
+const _ua = (self.navigator && self.navigator.userAgent) || '';
+const _isIOS = /iPhone|iPad|iPod/.test(_ua) || (/Macintosh/.test(_ua) && (self.navigator.maxTouchPoints || 0) > 1);
+const _log = (msg, detail) => {
+  const prefix = _isIOS ? '[iOS Notifications] [thoth-sw]' : '[thoth-sw]';
+  if (detail !== undefined) console.log(prefix, msg, detail);
+  else console.log(prefix, msg);
+};
+
 // Background Push Handler
 self.addEventListener('push', (event) => {
   let payload = {};
@@ -22,7 +33,7 @@ self.addEventListener('push', (event) => {
     payload = { notification: { title: '🔔 THOTH', body: text } };
   }
 
-  console.log('[thoth-sw] Push received:', payload);
+  _log('Push received — app state:', _isIOS ? (payload.notification && payload.notification.title ? 'title="' + payload.notification.title + '"' : 'payload ok') : 'ok');
 
   const title = (payload.notification && payload.notification.title) || (payload.data && payload.data.title) || '🔔 THOTH Daily';
   const options = {
@@ -53,11 +64,13 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     forwardToVisibleClient().then((forwarded) => {
       if (!forwarded) {
+        if (_isIOS) _log('No visible client → showing system notification (APNs delivery OK)');
         return self.registration.showNotification(title, options);
       }
+      if (_isIOS) _log('App visible → forwarded to page as in-app toast');
       return undefined;
     }).catch((err) => {
-      console.error('[thoth-sw] push handling failed:', err);
+      _log('push handling failed — falling back to showNotification:', err);
       return self.registration.showNotification(title, options);
     })
   );

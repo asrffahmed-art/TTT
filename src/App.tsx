@@ -26,7 +26,7 @@ import { Auth } from './components/Auth';
 import { Navigation } from './components/Navigation';
 import { Header } from './components/Header';
 import { DailyBriefingModal } from './components/DailyBriefingModal';
-import { listenToForegroundMessages, autoRequestNotificationsAfterLogin, requestNotificationPermission } from './services/notificationService';
+import { listenToForegroundMessages, autoRequestNotificationsAfterLogin, requestNotificationPermission, getIOSNotificationSupport, logIOS } from './services/notificationService';
 import { THEMES, getStoredThemeId, setStoredTheme, useAppTheme } from './lib/themeService';
 import { adTracker } from './lib/adTrackingService';
 
@@ -56,6 +56,10 @@ export default function App() {
   const [dailyNotificationId, setDailyNotificationId] = useState<string | null>(null);
   const [foregroundToast, setForegroundToast] = useState<any>(null);
   const [showNotifPermissionBanner, setShowNotifPermissionBanner] = useState(false);
+  // [iOS-DIAG] Guided "Add to Home Screen" flow — WebKit only exposes the Push
+  // API inside a Home-Screen web app, so Safari-tab users on iPhone get steps
+  // instead of a dead-end error. Android & desktop never see this state.
+  const [showIOSNotifGuidance, setShowIOSNotifGuidance] = useState(false);
   const [announcementBanner, setAnnouncementBanner] = useState<{ text: string; type: 'info' | 'warning' | 'alert' } | null>(null);
   const [paymentModalData, setPaymentModalData] = useState<PaymentModalData | null>(null);
 
@@ -172,6 +176,16 @@ export default function App() {
       setShowNotifPermissionBanner(false);
       return;
     }
+    // [iOS-DIAG] iOS/WebKit: the Push API only exists inside a Home-Screen web
+    // app (iOS 16.4+). Instead of the dead-end "not supported" error, show the
+    // exact install steps. Android & desktop keep the original path untouched.
+    const iosSupport = getIOSNotificationSupport();
+    if (iosSupport.isIOS && !iosSupport.pushCapable) {
+      logIOS('Enable tapped while not push-capable — opening install guidance', iosSupport.reason);
+      setShowNotifPermissionBanner(false);
+      setShowIOSNotifGuidance(true);
+      return;
+    }
     const result = await requestNotificationPermission(uid);
     if (result.success) {
       setShowNotifPermissionBanner(false);
@@ -251,6 +265,7 @@ export default function App() {
             // enable banner (the banner button provides the user gesture the
             // browser needs to show the permission prompt).
             if ('Notification' in window) {
+              logIOS('Permission status', Notification.permission);
               if (Notification.permission === 'granted') {
                 autoRequestNotificationsAfterLogin(user.uid);
                 setShowNotifPermissionBanner(false);
@@ -458,6 +473,64 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {/* [iOS-DIAG] iOS Notification Install Guidance — WebKit only exposes
+          the Push API to Home-Screen web apps (iOS 16.4+), so guide the user
+          through the exact steps instead of failing silently. */}
+      {showIOSNotifGuidance && (() => {
+        const ios = getIOSNotificationSupport();
+        const deniedBefore = 'Notification' in window && Notification.permission === 'denied';
+        return (
+          <div
+            className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
+            onClick={() => setShowIOSNotifGuidance(false)}
+          >
+            <div
+              className="bg-[#141824] border border-pink-500/40 rounded-3xl p-6 w-full max-w-md text-right shadow-2xl max-h-[85vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <button
+                  onClick={() => setShowIOSNotifGuidance(false)}
+                  className="p-1 text-white/40 hover:text-white rounded-lg hover:bg-white/10"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+                <h4 className="text-base font-bold text-white">الإشعارات على الآيفون 📱</h4>
+              </div>
+              <p className="text-xs text-white/70 leading-relaxed">
+                نظام iOS مش بيسمح لمواقع الويب تستقبل إشعارات من متصفح Safari العادي — بيسمح بيها بس لما التطبيق يتسجّل على الشاشة الرئيسية. الخطوات دي بتتعمل مرة واحدة بس:
+              </p>
+              {ios.needsIOSUpdate ? (
+                <div className="mt-3 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-white/80 leading-relaxed">
+                  ⚠️ نسخة iOS عندك ({ios.iosVersion ? `${ios.iosVersion.major}.${ios.iosVersion.minor}` : 'غير معروفة'}) مش بتدعم إشعارات الويب. محتاج iOS 16.4 أو أحدث: الإعدادات ← عام ← تحديث البرامج، وبعدها طبّق الخطوات اللي تحت.
+                </div>
+              ) : (
+                <ol className="mt-3 space-y-2 text-xs text-white/80 leading-relaxed list-decimal ps-5">
+                  <li>افتح thothai.site في Safari واضغط زر المشاركة <span className="font-bold text-pink-400">⬆️</span> (تحت في النص).</li>
+                  <li>اختار <span className="font-bold text-white">«إضافة إلى الشاشة الرئيسية»</span> — Add to Home Screen.</li>
+                  <li>افتح تطبيق <span className="font-bold text-white">THOTH</span> من الأيقونة اللي ظهرت على شاشة الآيفون.</li>
+                  <li>سجّل دخولك، وافتح الإعدادات ← فعّل «إشعارات THOTH اليومية» واضغط <span className="font-bold text-white">السماح</span> لما يظهر الطلب.</li>
+                </ol>
+              )}
+              {deniedBefore && (
+                <div className="mt-3 p-3 rounded-2xl bg-red-500/10 border border-red-500/30 text-xs text-white/80 leading-relaxed">
+                  ⚠️ إذن الإشعارات مترفض قبل كده. امسح تطبيق THOTH من الشاشة الرئيسية، وضيفه تاني بالخطوات اللي فوق، واضغط «السماح» المرة دي.
+                </div>
+              )}
+              <p className="mt-3 text-[10px] text-white/40 leading-relaxed" dir="ltr">
+                {`[iOS Notifications] iOS ${ios.iosVersion ? `${ios.iosVersion.major}.${ios.iosVersion.minor}` : '—'} · standalone: ${ios.standalone ? 'yes ✓' : 'no'} · push: ${ios.pushCapable ? 'ready ✓' : ios.reason}`}
+              </p>
+              <button
+                onClick={() => setShowIOSNotifGuidance(false)}
+                className="mt-4 w-full py-3 rounded-2xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-bold transition-colors"
+              >
+                فهمت، تمام
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Foreground Notification Toast Banner */}
       {foregroundToast && (

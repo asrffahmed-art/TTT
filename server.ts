@@ -106,7 +106,12 @@ async function sendWebPushToSubscription(subscriptionJson: string, payload: any)
   } catch (err: any) {
     const statusCode = err?.statusCode;
     if (statusCode === 404 || statusCode === 410) return "gone";
-    console.error("Web push send failed:", statusCode || "", err?.message || err);
+    // [iOS-DIAG] Log the push-service host so platform failures are visible:
+    //   web.push.apple.com   ⇒ iPhone/iPad (APNs-backed delivery)
+    //   fcm.googleapis.com   ⇒ Android / desktop Chrome
+    let pushHost = "";
+    try { pushHost = new URL(JSON.parse(subscriptionJson)?.endpoint || "").hostname; } catch { /* ignore */ }
+    console.error(`Web push send failed [${pushHost || "unknown-push-service"}]:`, statusCode || "", err?.message || err);
     return "failed";
   }
 }
