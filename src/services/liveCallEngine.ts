@@ -49,13 +49,15 @@ const NOISE_GATE_RMS = 0.004;     // skip near-silence so hum never confuses the
 const JITTER_PREBUFFER_S = 0.15;  // initial play delay per speech burst (anti-stutter)
 const STALE_QUEUE_S = 0.25;       // queue finished this long ago -> force-unblock mic
 
-// Inline AudioWorklet processor: buffers 2048 samples (~43 ms @48k, ~128 ms @16k)
-// then posts {rms, data} to the main thread. Runs on the real-time audio thread.
+// Inline AudioWorklet processor: buffers 1600 samples = exactly 100 ms at
+// 16 kHz, then posts {rms, data} to the main thread. Native-audio Live models
+// were observed to emit empty/interrupted turns when fed larger chunks, while
+// ~100 ms chunks stream through cleanly. Runs on the real-time audio thread.
 const WORKLET_SRC = `
 class ThothCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this._size = 2048;
+    this._size = 1600;
     this._buf = new Float32Array(this._size);
     this._idx = 0;
     this._sum = 0;
@@ -291,7 +293,7 @@ export class LiveCallEngine {
       this.worklet = worklet;
       this.workletSource = source;
     } else {
-      const processor = inCtx.createScriptProcessor(2048, 1, 1);
+      const processor = inCtx.createScriptProcessor(1600, 1, 1);
       processor.onaudioprocess = (e) => {
         const d = e.inputBuffer.getChannelData(0);
         let sum = 0;
