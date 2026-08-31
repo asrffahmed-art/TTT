@@ -3928,6 +3928,7 @@ Return ONLY valid JSON matching this schema:
       const systemInstruction = `You are Gemini 3.5 Live Translate, the exclusive real-time translation engine for the platform.
 Your sole and absolute duty is to translate any given input text directly into the requested target language: ${targetLang}.
 CRITICAL: The output field "translatedText" must always be written in the specified target language (${targetLang}), NOT the source language.
+If the requested target is a specific Arabic dialect or variant (e.g. ${targetLang.includes('اللهجة') || targetLang.includes('دارجة') ? 'this exact dialect' : 'لهجة محددة'}), write ONLY in that exact dialect using its authentic everyday vocabulary and expressions; never blend other Arabic dialects into it and never fall back to formal MSA unless MSA itself was requested.
 Never reply in Arabic if the target language is English or any other non-Arabic language. Always strictly obey the target language requested.
 Return only valid JSON.`;
 
@@ -9679,27 +9680,98 @@ app.all("/api/*", (req, res) => {
       if (isTranslateMode) {
         // Dedicated Gemini 3.5 Live Translate (Live API)
         const rawTarget = (reqUrl.searchParams.get("targetLang") || "ar").trim();
-        const langMap: Record<string, string> = {
-          'العربية': 'ar', 'ar': 'ar', 'ar_eg': 'ar', 'ar_msa': 'ar', 'ar_sa_najdi': 'ar', 'ar_sa_hijazi': 'ar', 'ar_ae': 'ar', 'ar_levant': 'ar', 'ar_ma': 'ar', 'ar_iq': 'ar', 'ar_sd': 'ar',
-          'الإنجليزية': 'en', 'en': 'en',
-          'الفرنسية': 'fr', 'fr': 'fr',
-          'الألمانية': 'de', 'de': 'de',
-          'الإسبانية': 'es', 'es': 'es',
-          'التركية': 'tr', 'tr': 'tr',
-          'الإيطالية': 'it', 'it': 'it',
-          'الروسية': 'ru', 'ru': 'ru',
-          'الصينية': 'zh', 'zh': 'zh',
-          'اليابانية': 'ja', 'ja': 'ja',
-          'الكورية': 'ko', 'ko': 'ko',
-          'القبطية المصرية': 'en'
+
+        // [DIALECT-FIX] Previously ALL Arabic dialect ids collapsed into 'ar', so the model
+        // received a generic "translate to Arabic" target and mixed dialects (Shami + Egyptian...).
+        // Per the official SDK, TranslationConfig.targetLanguageCode accepts full BCP-47 codes,
+        // so each dialect now keeps its own code PLUS an explicit output directive.
+        const AR_DIALECT_TARGETS: Record<string, { code: string; directive?: string }> = {
+          'ar':          { code: 'ar' },
+          'العربية':     { code: 'ar' },
+          'ar_msa':      { code: 'ar', directive: 'Modern Standard Arabic (العربية الفصحى المعيارية) only — never use any colloquial dialect.' },
+          'ar_eg':       { code: 'ar-EG', directive: 'Egyptian Arabic (اللهجة المصرية العامية — القاهرة والدلتا) exclusively: words like إزيك، عايز، ليه، دلوقتي، عشان. Never mix Gulf, Levantine, Maghrebi or formal MSA phrasing.' },
+          'ar_sy':       { code: 'ar-SY', directive: 'Syrian Levantine Arabic (اللهجة الشامية السورية — دمشق وحلب) exclusively: words like شو، بدك، هلق، منيح، كتير. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
+          'ar_lb':       { code: 'ar-LB', directive: 'Lebanese Arabic (اللهجة اللبنانية — بيروت والجبل) exclusively: words like شو، هيك، كتير، يا حرا. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
+          'ar_ps':       { code: 'ar-PS', directive: 'Palestinian Arabic (اللهجة الفلسطينية) exclusively — urban Palestinian phrasing. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
+          'ar_jo':       { code: 'ar-JO', directive: 'Jordanian Arabic (اللهجة الأردنية — عمّان) exclusively. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
+          'ar_levant':   { code: 'ar-JO', directive: 'Levantine Shami Arabic (اللهجة الشامية — سوريا ولبنان وفلسطين والأردن) exclusively. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
+          'ar_sa_najdi': { code: 'ar-SA', directive: 'Najdi Saudi Arabic (اللهجة النجدية — الرياض والقصيم) exclusively: words like وش، ليش، الحين، دحين. Never mix Hijazi, Egyptian or Levantine phrasing.' },
+          'ar_sa_hijazi':{ code: 'ar-SA', directive: 'Hijazi Saudi Arabic (اللهجة الحجازية — جدة ومكة والمدينة) exclusively: words like إيش، الآن، طيب، يالله. Never mix Najdi, Egyptian or Levantine phrasing.' },
+          'ar_ae':       { code: 'ar-AE', directive: 'Emirati Arabic (اللهجة الإماراتية) exclusively: words like شحالك، وايد، أبشر، خوش. Never mix other Gulf, Levantine or Egyptian dialects.' },
+          'ar_kw':       { code: 'ar-KW', directive: 'Kuwaiti Arabic (اللهجة الكويتية) exclusively. Never mix other Gulf, Levantine or Egyptian dialects.' },
+          'ar_qa':       { code: 'ar-QA', directive: 'Qatari Arabic (اللهجة القطرية) exclusively. Never mix other Gulf, Levantine or Egyptian dialects.' },
+          'ar_bh':       { code: 'ar-BH', directive: 'Bahraini Arabic (اللهجة البحرينية) exclusively. Never mix other Gulf, Levantine or Egyptian dialects.' },
+          'ar_om':       { code: 'ar-OM', directive: 'Omani Arabic (اللهجة العمانية) exclusively. Never mix other Gulf, Levantine or Egyptian dialects.' },
+          'ar_ye':       { code: 'ar-YE', directive: 'Yemeni Arabic (اللهجة اليمنية — صنعاء وعدن) exclusively. Never mix Gulf, Levantine or Egyptian dialects.' },
+          'ar_iq':       { code: 'ar-IQ', directive: 'Iraqi Arabic (اللهجة العراقية — بغداد والبصرة) exclusively: words like شلون، أكو، ماكو، هواية. Never mix Gulf, Levantine or Egyptian dialects.' },
+          'ar_ma':       { code: 'ar-MA', directive: 'Moroccan Darija (الدارجة المغربية) exclusively. Never mix Middle-Eastern dialects or formal MSA into the output.' },
+          'ar_dz':       { code: 'ar-DZ', directive: 'Algerian Arabic (اللهجة الجزائرية الدارجة) exclusively. Never mix Middle-Eastern dialects or formal MSA into the output.' },
+          'ar_tn':       { code: 'ar-TN', directive: 'Tunisian Arabic (اللهجة التونسية الدارجة) exclusively. Never mix Middle-Eastern dialects or formal MSA into the output.' },
+          'ar_ly':       { code: 'ar-LY', directive: 'Libyan Arabic (اللهجة الليبية — طرابلس وبنغازي) exclusively. Never mix Middle-Eastern dialects or formal MSA into the output.' },
+          'ar_sd':       { code: 'ar-SD', directive: 'Sudanese Arabic (اللهجة السودانية — الخرطوم) exclusively. Never mix Egyptian, Gulf or Levantine dialects.' }
         };
-        const targetLangCode = langMap[rawTarget] || rawTarget.slice(0, 2).toLowerCase() || 'ar';
-        console.log("[GEMINI 3.5 LIVE TRANSLATE] Connecting via Live API. Target language:", targetLangCode);
+
+        const GLOBAL_LANG_CODES: Record<string, string> = {
+          'en': 'en', 'الإنجليزية': 'en',
+          'fr': 'fr', 'الفرنسية': 'fr',
+          'de': 'de', 'الألمانية': 'de',
+          'es': 'es', 'الإسبانية': 'es',
+          'tr': 'tr', 'التركية': 'tr',
+          'it': 'it', 'الإيطالية': 'it',
+          'ru': 'ru', 'الروسية': 'ru',
+          'zh': 'zh', 'الصينية': 'zh',
+          'ja': 'ja', 'اليابانية': 'ja',
+          'ko': 'ko', 'الكورية': 'ko',
+          'fa': 'fa', 'الفارسية': 'fa',
+          'ur': 'ur', 'الأردية': 'ur',
+          'hi': 'hi', 'الهندية': 'hi',
+          'bn': 'bn', 'البنغالية': 'bn',
+          'pt': 'pt', 'البرتغالية': 'pt',
+          'nl': 'nl', 'الهولندية': 'nl',
+          'el': 'el', 'اليونانية': 'el',
+          'sv': 'sv', 'السويدية': 'sv',
+          'pl': 'pl', 'البولندية': 'pl',
+          'he': 'he', 'العبرية': 'he',
+          'ms': 'ms', 'الملايو': 'ms',
+          'id': 'id', 'الإندونيسية': 'id',
+          'th': 'th', 'التايلاندية': 'th',
+          'vi': 'vi', 'الفيتنامية': 'vi',
+          'fil': 'fil', 'tl': 'fil', 'الفلبينية': 'fil',
+          'sw': 'sw', 'السواحيلية': 'sw',
+          'am': 'am', 'الأمهرية': 'am',
+          'so': 'so', 'الصومالية': 'so',
+          'ku': 'ku', 'الكردية': 'ku',
+          'uk': 'uk', 'الأوكرانية': 'uk',
+          'ro': 'ro', 'الرومانية': 'ro',
+          'hu': 'hu', 'الهنغارية': 'hu',
+          'cs': 'cs', 'التشيكية': 'cs',
+          'da': 'da', 'الدنماركية': 'da',
+          'no': 'no', 'nb': 'no', 'النرويجية': 'no',
+          'fi': 'fi', 'الفنلندية': 'fi',
+          'coptic': 'en', 'القبطية المصرية': 'en'
+        };
+
+        let targetLangCode = 'ar';
+        let dialectDirective: string | undefined = undefined;
+        if (AR_DIALECT_TARGETS[rawTarget]) {
+          targetLangCode = AR_DIALECT_TARGETS[rawTarget].code;
+          dialectDirective = AR_DIALECT_TARGETS[rawTarget].directive;
+        } else if (GLOBAL_LANG_CODES[rawTarget]) {
+          targetLangCode = GLOBAL_LANG_CODES[rawTarget];
+        } else {
+          targetLangCode = rawTarget.slice(0, 2).toLowerCase() || 'ar';
+        }
+        console.log("[GEMINI 3.5 LIVE TRANSLATE] Connecting via Live API. Target language:", targetLangCode, dialectDirective ? "(dialect directive active)" : "");
 
         session = await ai.live.connect({
           model: "gemini-3.5-live-translate-preview",
           config: {
             responseModalities: [Modality.AUDIO],
+            // [DIALECT-FIX] Explicit dialect enforcement so the output never drifts back to MSA
+            // or blends another dialect into the requested one.
+            ...(dialectDirective ? {
+              systemInstruction: `You are a live speech translator. Every translated output MUST be spoken strictly in ${dialectDirective} This dialect rule has the highest priority: never fall back to Modern Standard Arabic, never blend another Arabic dialect, and never answer in the source language.`
+            } : {}),
             translationConfig: {
               targetLanguageCode: targetLangCode,
               echoTargetLanguage: false
