@@ -25,7 +25,7 @@ export class LiveAudioService {
   private state: LiveAudioState = 'disconnected';
   private isRunning: boolean = false;
   private callbacks: LiveAudioCallbacks;
-  private activeModel: string = 'gemini-3.1-flash-live-preview';
+  private activeModel: string = 'gemini-2.5-flash-native-audio-latest';
 
   constructor(callbacks: LiveAudioCallbacks) {
     this.callbacks = callbacks;

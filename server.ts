@@ -9672,7 +9672,7 @@ app.all("/api/*", (req, res) => {
         const validVoices = ["Aoede", "Charon", "Fenrir", "Kore", "Puck", "Zephyr"];
         const finalVoiceName = validVoices.includes(selectedVoice) ? selectedVoice : "Puck";
 
-        const targetModel = reqUrl.searchParams.get("model") || "gemini-3.1-flash-live-preview";
+        const targetModel = reqUrl.searchParams.get("model") || "gemini-2.5-flash-native-audio-latest";
         console.log("[GEMINI LIVE] Connecting to model:", targetModel, "Voice:", finalVoiceName);
 
         session = await ai.live.connect({
@@ -9686,6 +9686,8 @@ app.all("/api/*", (req, res) => {
           },
           callbacks: {
             onmessage: (message: LiveServerMessage) => {
+              // TEMP diagnostic: raw shape visibility for native-audio models (remove after fix)
+              try { console.log("[LIVE-DBG]", JSON.stringify(message).slice(0, 400)); } catch (e) {}
               if ((message as any).setupComplete) {
                 console.log("[GEMINI LIVE] Setup complete from callback");
                 if (ws.readyState === WebSocket.OPEN) {

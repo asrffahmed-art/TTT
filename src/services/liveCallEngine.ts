@@ -134,7 +134,8 @@ export class LiveCallEngine {
 
   /** Live counters — exposed on window.__thothLive by consumers for debugging. */
   public stats = {
-    micFrames: 0, sent: 0, sentBytes: 0, blockedFrames: 0, silentFrames: 0,
+    micFrames: 0, sent: 0, sentBytes: 0, sendFails: 0, blockedFrames: 0,
+    silentFrames: 0, gateFrames: 0, tailFrames: 0,
     received: 0, playedChunks: 0, underruns: 0, interrupts: 0, fallbacks: 0,
     lastSendAgoMs: 0, lastSendAt: 0
   };
@@ -203,8 +204,8 @@ export class LiveCallEngine {
 
   public sendRaw(obj: any): boolean {
     const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    try { ws.send(JSON.stringify(obj)); return true; } catch { return false; }
+    if (!ws || ws.readyState !== WebSocket.OPEN) { this.stats.sendFails++; return false; }
+    try { ws.send(JSON.stringify(obj)); return true; } catch { this.stats.sendFails++; return false; }
   }
 
   // ------------------------------------------------------------------ capture
@@ -316,7 +317,7 @@ export class LiveCallEngine {
     this.cb.onMicLevel?.(Math.min(100, Math.floor(rms * 400)));
 
     const nowMs = performance.now();
-    if (nowMs - this.micOpenTime < MIC_OPEN_FILTER_MS) return;
+    if (nowMs - this.micOpenTime < MIC_OPEN_FILTER_MS) { this.stats.gateFrames++; return; }
 
     // Half-duplex echo guard: never stream while the assistant plays, but with
     // a staleness sweep so a lost onended handler can never deadlock the mic.
@@ -332,7 +333,7 @@ export class LiveCallEngine {
         return;
       }
     }
-    if (nowMs - this.lastPlaybackEnd < PLAYBACK_TAIL_MS) return;
+    if (nowMs - this.lastPlaybackEnd < PLAYBACK_TAIL_MS) { this.stats.tailFrames++; return; }
 
     // Gentle noise gate
     if (rms < NOISE_GATE_RMS) {
