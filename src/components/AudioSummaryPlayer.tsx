@@ -271,7 +271,7 @@ export function AudioSummaryPlayer({
           <div className="flex-1 min-w-0 text-xs">
             <div className="font-bold text-amber-200 text-xs">الحد اليومي للملخصات الصوتية</div>
             <p className="text-amber-300/80 text-[11px] mt-1 leading-relaxed">
-              تحصل الباقة المجانية على ملخص صوتي واحد ناجح يومياً (UTC). يتجدد الرصيد تلقائياً كل يوم، أو يمكنك الترقية لملخصات صوتية غير محدودة.
+              الرصيد بيتجدد تلقائياً منتصف الليل بتوقيت القاهرة 🕛، أو يمكنك الترقية لملخصات صوتية غير محدودة.
             </p>
           </div>
         </div>

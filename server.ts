@@ -1959,6 +1959,38 @@ function isExplicitAudioIntent(text: string): boolean {
   return /(صوت|صوتي|صوتية|بودكاست|فويس|ريكورد|اوديو|أوديو|مسموع|مسموعة|audio summary|voice summary|podcast summary|audio notes|audio note|ملاحظات صوتية|ملاحظه صوتيه|ملاحظات صوتيه|ملخص صوتي|تسجيل صوتي|سمعني|اعمله صوتي|اعملو صوت|اعمل صوت|خليه صوت|شرح صوتي|تسجيل صوت|صوت بنت|صوت ولد|بصوت|audio|voice note|voice|podcast|spoken|read aloud|read to me)/i.test(text);
 }
 
+// [AUDIO-INTENT-FIX] Tiered audio-request detection.
+// Problem this solves: the old broad matcher treated ANY message containing a bare audio word
+// ("صوت", "audio", "voice") as an audio-summary request, ran the full audio pipeline and burned
+// the user's daily audio credit on innocent messages like "الصوت مش شغال" or "the voice lags".
+function isStrongAudioRequest(text: string): boolean {
+  const t = (text || '').toLowerCase().trim();
+  if (!t) return false;
+  return /(ملخص\s*صوتي|تلخيص\s*صوتي|شرح\s*صوتي|تسجيل\s*صوتي|تسجيل\s*صوت|ملاحظات\s*صوتية|ملاحظه\s*صوتيه|ملاحظات\s*صوتيه|امتحان\s*صوتي|اختبار\s*صوتي|كويز\s*صوتي|أسئلة\s*صوتية|اسئلة\s*صوتية|اسئله\s*صوتيه|بصوت\s*(ولد|بنت|راجل|ست|شاب|فتاة|فتاه|واحد)|صوت\s*(ولد|بنت|راجل|ست|شاب|فتاة|فتاه)|سمعني|سمعنى|اعمل\S{0,3}\s*ب?صوت|خلي\S{0,2}\s*ب?صوت|حوله\s*ب?صوت|حوّله\s*ب?صوت|اقراه\s*بصوت|اقرأه\s*بصوت|اقراه\s*صوتي|اتكلمني\s*بصوت|احكيلي\s*بصوت|رد\s*بصوت|ابعت\S{0,3}\s*بصوت|نسخه\s*صوتية|نسخة\s*صوتية|بودكاست|podcast|audio\s*(summary|notes?|version|recording|file)|voice\s*(summary|notes?|note|version)|read\s*(aloud|to\s*me|it\s*aloud|this\s*aloud)|make\s*it\s*audio|turn\s*(it|this)\s*into\s*audio|as\s*an?\s*audio|spoken\s*version|(لخص|تلخيص|اشرح|شرح|سجل|حول|حوّل|امتحان|اختبار|كويز|ملخص)\s*\S{0,8}\s*(صوتي|صوتية|بصوت|مسموع))/i.test(t);
+}
+
+// Bare audio words — only count as audio request when replying inside an audio/text clarification flow
+function isWeakAudioWord(text: string): boolean {
+  return /(صوت|صوتي|صوتية|فويس|ريكورد|اوديو|أوديو|مسموع|مسموعة|مسموعه|\baudio\b|\bvoice\b|\bspoken\b)/i.test(text || '');
+}
+
+// Messages REPORTING audio problems must never be treated as audio-output requests
+function isAudioProblemComplaint(text: string): boolean {
+  const t = (text || '').toLowerCase().trim();
+  if (!t) return false;
+  const hasAudioWord = /(ال)?(صوت|صوتك|صوتي|اوديو|أوديو|ميكروفون|مايك|audio|sound|voice|mic\b)/i.test(t);
+  const hasProblem = /(مش\s*شغال|مش\s*راض[يي]|مش\s*موجود|مش\s*سمعني|مش\s*سمعك|مش\s*بسمع|مفيش|مافيش|ما\s*فيش|باظ|بوظ|باتظ|خربان|بيقطع|بتقطع|بيقطّع|بطقطق|بيطقطق|فاصل|مقفول|مكتوم|ضعيف|واطي|بيتأخر|بيتاخر|متأخر|متاخر|بيهرب|بيقف|وقف|بيعلق|not\s*working|doesn'?t\s*work|didn'?t\s*work|broken|cutting\s*out|cuts\s*out|laggy|lagging|delayed|echo|too\s*quiet|too\s*low|muted|no\s*sound|can'?t\s*hear|stopped\s*working|went\s*mute|froze|freezing)/i.test(t);
+  return hasAudioWord && hasProblem;
+}
+
+// Explicit "no audio" preference ("بدون صوت", "من غير صوت", "مش عايز صوتي"...)
+function isNoAudioPreference(text: string): boolean {
+  const t = (text || '').toLowerCase().trim();
+  if (!t) return false;
+  return /(بدون|من\s*غير|منغير|without)\s*(ال)?(صوت|اوديو|أوديو|audio|voice|sound)/i.test(t)
+      || /(مش|لا|مو)\s*\S{0,12}\s*(ملخص\s*صوتي|بصوت|صوتي)/i.test(t);
+}
+
 function isExplicitTextIntent(text: string): boolean {
   return /(نصي|نصية|نصيه|مكتوب|مكتوبة|مكتوبه|كتابة|كتابه|بالكتابة|بالكتابه|بالنص|قراءة|قراءه|اقراه|اقرأه|نص عادي|نص|text|written|in text|reading|read)/i.test(text);
 }
@@ -1990,14 +2022,32 @@ function parseAudioAndDocumentIntent(
   hasMediaOrDoc: boolean,
   reqBody: any,
   userProfileContext?: string,
-  isReplyingToVoiceQuestion?: boolean
+  isReplyingToVoiceQuestion?: boolean,
+  isReplyingToAudioQuestion?: boolean
 ): IntentAnalysis {
   const q = (userQuery || '').toLowerCase().trim();
   
-  // 1. Audio Delivery Detection - ONLY when explicitly in audio_summary mode, explicit audio words, or directly answering voice preference prompt
-  const isAudioDelivery = reqBody?.mode === 'audio_summary' || 
-                          isExplicitAudioIntent(q) || 
-                          (Boolean(isReplyingToVoiceQuestion) && isVoicePreferenceReply(q));
+  // 1. Audio Delivery Detection (tiered + guarded) [AUDIO-INTENT-FIX]
+  //    - Explicit UI mode ('audio_summary' button) always wins unless user says "no audio"
+  //    - STRONG compound phrases ("اعمله صوتي", "ملخص صوتي", "بودكاست", "read aloud"...) = real request
+  //    - WEAK bare words (صوت / audio / voice) only count when replying to an
+  //      audio-vs-text clarification or a voice-preference question
+  //    - Audio-problem complaints ("الصوت مش شغال") and "no audio" preferences NEVER trigger audio
+  const _noAudioPref = isNoAudioPreference(q);
+  const _complaint = isAudioProblemComplaint(q);
+  const _replyCtx = Boolean(isReplyingToAudioQuestion || isReplyingToVoiceQuestion);
+  let isAudioDelivery = false;
+  if (reqBody?.mode === 'audio_summary') {
+    isAudioDelivery = !_noAudioPref;
+  } else if (!_noAudioPref && !_complaint) {
+    if (isStrongAudioRequest(q)) {
+      isAudioDelivery = true;
+    } else if (isWeakAudioWord(q) && _replyCtx) {
+      isAudioDelivery = true;
+    } else if (Boolean(isReplyingToVoiceQuestion) && isVoicePreferenceReply(q)) {
+      isAudioDelivery = true;
+    }
+  }
 
   // 2. Extract Question Count if specified
   let questionCount: number | undefined = undefined;
@@ -2480,8 +2530,15 @@ async function getUserPlanDetails(userId?: string): Promise<{ planId: string; pl
     userPlanId = 'guest';
   } else {
     try {
-      const userSnap = await getDoc(doc(dbWeb, "users", userId));
-      if (userSnap.exists()) {
+      // [QUOTA-FIX] A transient Firestore hiccup must NOT silently downgrade paying users to 'free'
+      // (that caused false "limit reached" errors). Single retry before giving up.
+      let userSnap: any = null;
+      try {
+        userSnap = await getDoc(doc(dbWeb, "users", userId));
+      } catch (readErr1) {
+        userSnap = await getDoc(doc(dbWeb, "users", userId));
+      }
+      if (userSnap && userSnap.exists()) {
         const d = userSnap.data();
         if (d.plan) userPlanId = d.plan.toLowerCase();
         else if (d.subscriptionPlan) userPlanId = d.subscriptionPlan.toLowerCase();
@@ -2972,7 +3029,7 @@ User request: "${userQuery}"` }] }],
       const isReplyingToAudioOrTextQuestion = prevText.includes('ملخص صوتي (بودكاست)') || prevText.includes('ملخص نصي مكتوب');
       const isReplyingToVoiceGenderOrToneQuestion = prevText.includes('ولد 👦 ولا بنت 👧') || prevText.includes('نوع الأسلوب والنبرة');
 
-      const intent = parseAudioAndDocumentIntent(userQuery, hasMediaOrDoc, req.body, userProfileContext, isReplyingToVoiceGenderOrToneQuestion);
+      const intent = parseAudioAndDocumentIntent(userQuery, hasMediaOrDoc, req.body, userProfileContext, isReplyingToVoiceGenderOrToneQuestion, isReplyingToAudioOrTextQuestion);
 
       // Branch 1: Audio Summary / Audio Notes / Spoken Questions requested
       if (intent.isAudioDelivery) {
@@ -3000,7 +3057,7 @@ User request: "${userQuery}"` }] }],
             const planDisplay = planNameMap[creditCheck.plan] || 'باقتك الحالية';
 
             return res.json({
-              text: `وصلت إلى الحد اليومي للملخصات والتسجيلات الصوتية في ${planDisplay}.\n\nيمكنك الترقية إلى باقة أعلى للحصول على ملخصات صوتية إضافية أو غير محدودة! 🎙️✨`,
+              text: `وصلت للحد اليومي للملخصات الصوتية في ${planDisplay} (${creditCheck.used}/${creditCheck.limit} ملخص).\n\nالرصيد بيتجدد تلقائياً منتصف الليل بتوقيت القاهرة 🕛 أو تقدر تترقّي لباقة أعلى لملخصات أكتر 🎙️✨`,
               audioSummaryInfo: {
                 status: 'limit_reached',
                 title: 'تم استهلاك رصيد الملخصات الصوتية اليومي'
@@ -3173,7 +3230,13 @@ User request: "${userQuery}"` }] }],
 
           // Check clarification requirement: if user wants a summary/explanation of video/link/pdf and did not explicitly choose audio vs text, ask first!
           const isTextExplicit = isExplicitTextIntent(userQuery);
-          const isAudioExplicit = isExplicitAudioIntent(userQuery) || isVoicePreferenceReply(userQuery);
+          // [AUDIO-INTENT-FIX] Same tiered logic as Branch 1 so complaints like "الصوت مش شغال"
+          // don't skip the audio-vs-text clarification
+          const isAudioExplicit = (isStrongAudioRequest(userQuery) 
+                                    || isVoicePreferenceReply(userQuery) 
+                                    || (isWeakAudioWord(userQuery) && (isReplyingToAudioOrTextQuestion || isReplyingToVoiceGenderOrToneQuestion))) 
+                                  && !isAudioProblemComplaint(userQuery) 
+                                  && !isNoAudioPreference(userQuery);
           const isSpecificStructured = isSpecificStructuredOrInquiryRequest(userQuery);
           const isGenericSummary = isGenericSummaryOrExplanationIntent(userQuery);
 
