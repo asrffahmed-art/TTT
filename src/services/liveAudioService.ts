@@ -16,7 +16,6 @@ export interface LiveAudioCallbacks {
 export class LiveAudioService {
   private ws: WebSocket | null = null;
   private mediaStream: MediaStream | null = null;
-  private inputAudioCtx: AudioContext | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
   private currentAudio: HTMLAudioElement | null = null;
   private state: LiveAudioState = 'disconnected';
@@ -26,6 +25,7 @@ export class LiveAudioService {
 
   // Output playback (raw PCM queue via WebAudio)
   private outputAudioCtx: AudioContext | null = null;
+  private outputGain: GainNode | null = null;
   private nextPlayTime: number = 0;
   private queuedSources: AudioBufferSourceNode[] = [];
 
@@ -60,8 +60,6 @@ export class LiveAudioService {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          sampleRate: 16000,
-          sampleSize: 16,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -123,16 +121,15 @@ export class LiveAudioService {
     if (!this.mediaStream || !this.isRunning) return;
 
     try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      this.inputAudioCtx = new AudioCtx({ sampleRate: 16000 });
-      if (this.inputAudioCtx.state === 'suspended') {
-        this.inputAudioCtx.resume();
-      }
+      // Single native-rate AudioContext for both capture and playback: no audio
+      // device reconfiguration (the classic audible pop) when the session starts
+      const audioCtx = this.ensureOutputCtx();
+      if (!audioCtx) return;
       // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
       this.micOpenTime = performance.now();
 
-      const source = this.inputAudioCtx.createMediaStreamSource(this.mediaStream);
-      this.scriptProcessor = this.inputAudioCtx.createScriptProcessor(2048, 1, 1);
+      const source = audioCtx.createMediaStreamSource(this.mediaStream);
+      this.scriptProcessor = audioCtx.createScriptProcessor(2048, 1, 1);
 
       this.scriptProcessor.onaudioprocess = (e) => {
         if (!this.isRunning) return;
@@ -169,8 +166,25 @@ export class LiveAudioService {
 
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
+        // Downsample from the context's native rate to 16kHz for Gemini Live
+        let pcmData = inputData;
+        const nativeRate = this.outputAudioCtx ? this.outputAudioCtx.sampleRate : 16000;
+        if (nativeRate > 16000 * 1.01) {
+          const ratio = nativeRate / 16000;
+          const outLen = Math.floor(inputData.length / ratio);
+          const down = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i++) {
+            const start = Math.floor(i * ratio);
+            const end = Math.min(Math.floor((i + 1) * ratio), inputData.length);
+            let acc = 0;
+            for (let j = start; j < end; j++) acc += inputData[j];
+            down[i] = acc / Math.max(1, end - start);
+          }
+          pcmData = down;
+        }
+
         // Send audio PCM chunk directly to server
-        const pcmBuffer = this.floatTo16BitPCM(inputData);
+        const pcmBuffer = this.floatTo16BitPCM(pcmData);
         const base64Audio = this.arrayBufferToBase64(pcmBuffer);
 
         this.ws.send(JSON.stringify({
@@ -180,10 +194,10 @@ export class LiveAudioService {
       };
 
       source.connect(this.scriptProcessor);
-      const muteGain = this.inputAudioCtx.createGain();
+      const muteGain = audioCtx.createGain();
       muteGain.gain.value = 0;
       this.scriptProcessor.connect(muteGain);
-      muteGain.connect(this.inputAudioCtx.destination);
+      muteGain.connect(audioCtx.destination);
     } catch (err) {
       console.error('Error starting mic stream:', err);
     }
@@ -247,6 +261,11 @@ export class LiveAudioService {
       if (!this.outputAudioCtx || this.outputAudioCtx.state === 'closed') {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         this.outputAudioCtx = new AudioCtx();
+        // Master gain allows smooth fade in/out of playback (no hard-stop clicks)
+        const master = this.outputAudioCtx.createGain();
+        master.gain.value = 1;
+        master.connect(this.outputAudioCtx.destination);
+        this.outputGain = master;
         this.nextPlayTime = 0;
       }
       if (this.outputAudioCtx.state === 'suspended') {
@@ -289,18 +308,23 @@ export class LiveAudioService {
         float32Data[i] = int16[i] / 32768.0;
       }
 
+      const currentTime = ctx.currentTime;
+      // If queue is empty or lagged behind, sync playback time to current time + 20ms
+      if (this.queuedSources.length === 0 || this.nextPlayTime < currentTime) {
+        this.nextPlayTime = currentTime + 0.02;
+        // Speech onset click guard: tiny 5ms fade-in on the first samples of a fresh burst
+        const fadeLen = Math.min(120, float32Data.length);
+        for (let i = 0; i < fadeLen; i++) {
+          float32Data[i] *= i / fadeLen;
+        }
+      }
+
       const audioBuffer = ctx.createBuffer(1, float32Data.length, sampleRate);
       audioBuffer.getChannelData(0).set(float32Data);
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(ctx.destination);
-
-      const currentTime = ctx.currentTime;
-      // If queue is empty or lagged behind, sync playback time to current time + 20ms
-      if (this.queuedSources.length === 0 || this.nextPlayTime < currentTime) {
-        this.nextPlayTime = currentTime + 0.02;
-      }
+      source.connect(this.outputGain || ctx.destination);
 
       const startTime = this.nextPlayTime;
       source.start(startTime);
@@ -353,13 +377,36 @@ export class LiveAudioService {
 
   public stopCurrentAudio() {
     if (this.queuedSources.length > 0) {
-      this.queuedSources.forEach(source => {
-        try { source.stop(); } catch (e) {}
-      });
+      const sources = this.queuedSources;
       this.queuedSources = [];
       this.lastPlaybackEndTime = performance.now();
-      if (this.outputAudioCtx && this.outputAudioCtx.state !== 'closed') {
-        this.nextPlayTime = this.outputAudioCtx.currentTime;
+      const ctx = this.outputAudioCtx;
+      const master = this.outputGain;
+      if (ctx && master && ctx.state !== 'closed') {
+        // Fade out over ~12ms before stopping so interrupts never click
+        const now = ctx.currentTime;
+        try {
+          master.gain.cancelScheduledValues(now);
+          master.gain.setValueAtTime(master.gain.value, now);
+          master.gain.linearRampToValueAtTime(0.0001, now + 0.012);
+        } catch (e) {}
+        setTimeout(() => {
+          sources.forEach(source => {
+            try { source.stop(); } catch (e) {}
+          });
+          try {
+            if (ctx.state !== 'closed') {
+              const t = ctx.currentTime;
+              master.gain.cancelScheduledValues(t);
+              master.gain.setValueAtTime(1, t);
+            }
+          } catch (e) {}
+        }, 20);
+        this.nextPlayTime = ctx.currentTime;
+      } else {
+        sources.forEach(source => {
+          try { source.stop(); } catch (e) {}
+        });
       }
     }
     if (this.currentAudio) {
@@ -396,19 +443,13 @@ export class LiveAudioService {
       this.scriptProcessor = null;
     }
 
-    if (this.inputAudioCtx) {
-      try {
-        this.inputAudioCtx.close();
-      } catch (e) {}
-      this.inputAudioCtx = null;
-    }
-
     if (this.outputAudioCtx) {
       try {
         this.outputAudioCtx.close().catch(() => {});
       } catch (e) {}
       this.outputAudioCtx = null;
     }
+    this.outputGain = null;
     this.queuedSources = [];
 
     if (this.mediaStream) {

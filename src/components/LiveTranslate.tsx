@@ -76,8 +76,8 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
   const [liveStatusText, setLiveStatusText] = useState('');
 
   const wsRef = useRef<WebSocket | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const outputAudioCtxRef = useRef<AudioContext | null>(null);
+  const outputGainRef = useRef<GainNode | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
@@ -263,6 +263,11 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
     if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === 'closed') {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       outputAudioCtxRef.current = new AudioCtx();
+      // Master gain allows smooth fade in/out of playback (no hard-stop clicks)
+      const master = outputAudioCtxRef.current.createGain();
+      master.gain.value = 1;
+      master.connect(outputAudioCtxRef.current.destination);
+      outputGainRef.current = master;
     }
     if (outputAudioCtxRef.current.state === 'suspended') {
       await outputAudioCtxRef.current.resume();
@@ -285,17 +290,23 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       }
 
       const sampleRate = 24000;
+      const currentTime = ctx.currentTime;
+      if (activeSourcesRef.current.length === 0 || nextPlayTimeRef.current < currentTime) {
+        nextPlayTimeRef.current = currentTime;
+        // Speech onset click guard: tiny 5ms fade-in on the first samples of a fresh burst
+        const fadeLen = Math.min(120, float32.length);
+        for (let i = 0; i < fadeLen; i++) {
+          float32[i] *= i / fadeLen;
+        }
+      }
+
       const audioBuffer = ctx.createBuffer(1, float32.length, sampleRate);
       audioBuffer.copyToChannel(float32, 0);
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(ctx.destination);
+      source.connect(outputGainRef.current || ctx.destination);
 
-      const currentTime = ctx.currentTime;
-      if (nextPlayTimeRef.current < currentTime) {
-        nextPlayTimeRef.current = currentTime;
-      }
       source.start(nextPlayTimeRef.current);
       nextPlayTimeRef.current += audioBuffer.duration;
 
@@ -309,10 +320,49 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
     }
   };
 
+  // Fade out and stop any queued playback without producing a hard-stop click
+  const clearOutputPlayback = () => {
+    const ctx = outputAudioCtxRef.current;
+    const master = outputGainRef.current;
+    const sources = activeSourcesRef.current;
+    activeSourcesRef.current = [];
+    lastPlaybackEndRef.current = performance.now();
+
+    if (ctx && master && sources.length > 0 && ctx.state !== 'closed') {
+      const now = ctx.currentTime;
+      try {
+        master.gain.cancelScheduledValues(now);
+        master.gain.setValueAtTime(master.gain.value, now);
+        master.gain.linearRampToValueAtTime(0.0001, now + 0.012);
+      } catch (e) {}
+      setTimeout(() => {
+        sources.forEach(source => {
+          try { source.stop(); } catch (e) {}
+        });
+        try {
+          if (ctx.state !== 'closed') {
+            const t = ctx.currentTime;
+            master.gain.cancelScheduledValues(t);
+            master.gain.setValueAtTime(1, t);
+          }
+        } catch (e) {}
+      }, 20);
+    } else {
+      sources.forEach(source => {
+        try { source.stop(); } catch (e) {}
+      });
+    }
+
+    if (ctx && ctx.state !== 'closed') {
+      nextPlayTimeRef.current = ctx.currentTime;
+    }
+  };
+
   const stopLiveSession = () => {
     setIsRecording(false);
     setIsLiveActive(false);
     setLiveStatusText('');
+    clearOutputPlayback();
 
     if (scriptProcessorRef.current) {
       try { scriptProcessorRef.current.disconnect(); } catch(e) {}
@@ -321,10 +371,6 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
     if (mediaStreamRef.current) {
       try { mediaStreamRef.current.getTracks().forEach(t => t.stop()); } catch(e) {}
       mediaStreamRef.current = null;
-    }
-    if (audioCtxRef.current) {
-      try { audioCtxRef.current.close(); } catch(e) {}
-      audioCtxRef.current = null;
     }
     if (wsRef.current) {
       try {
@@ -370,15 +416,8 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
           } else if (msg.type === 'translated_text' && msg.text) {
             setTranslatedText(prev => prev ? prev + ' ' + msg.text : msg.text);
           } else if (msg.type === 'interrupted') {
-            // Model detected an interruption: stop queued playback so it can speak fresh audio
-            activeSourcesRef.current.forEach(source => {
-              try { source.stop(); } catch (e) {}
-            });
-            activeSourcesRef.current = [];
-            lastPlaybackEndRef.current = performance.now();
-            if (outputAudioCtxRef.current) {
-              nextPlayTimeRef.current = outputAudioCtxRef.current.currentTime;
-            }
+            // Model detected an interruption: fade out queued playback smoothly
+            clearOutputPlayback();
           } else if (msg.type === 'audio' && msg.audio) {
             playAudioChunk(msg.audio);
           } else if (msg.type === 'guest_limit_reached') {
@@ -421,12 +460,10 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       });
       mediaStreamRef.current = stream;
 
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioCtx({ sampleRate: 16000 });
-      audioCtxRef.current = audioCtx;
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
+      // Reuse the single native-rate AudioContext for mic capture too:
+      // creating a second 16kHz context forces an audio device reconfiguration,
+      // which is exactly what produces the audible pop when the session starts.
+      const audioCtx = await ensureOutputCtx();
       // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
       micOpenTimeRef.current = performance.now();
 
@@ -464,11 +501,28 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
         let gateSum = 0;
         for (let i = 0; i < inputData.length; i++) gateSum += inputData[i] * inputData[i];
         if (Math.sqrt(gateSum / inputData.length) < 0.004) return;
-        
+
+        // Downsample from the context's native rate to 16kHz for Gemini Live
+        const nativeRate = audioCtx.sampleRate;
+        let pcmData = inputData;
+        if (nativeRate > 16000 * 1.01) {
+          const ratio = nativeRate / 16000;
+          const outLen = Math.floor(inputData.length / ratio);
+          const down = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i++) {
+            const start = Math.floor(i * ratio);
+            const end = Math.min(Math.floor((i + 1) * ratio), inputData.length);
+            let acc = 0;
+            for (let j = start; j < end; j++) acc += inputData[j];
+            down[i] = acc / Math.max(1, end - start);
+          }
+          pcmData = down;
+        }
+
         // Convert Float32Array to Int16Array PCM
-        const pcm16 = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          let s = Math.max(-1, Math.min(1, inputData[i]));
+        const pcm16 = new Int16Array(pcmData.length);
+        for (let i = 0; i < pcmData.length; i++) {
+          let s = Math.max(-1, Math.min(1, pcmData[i]));
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 

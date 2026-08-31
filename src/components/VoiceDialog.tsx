@@ -58,8 +58,8 @@ export function VoiceDialog({
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const inputAudioCtxRef = useRef<AudioContext | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const outputGainRef = useRef<GainNode | null>(null);
 
   // Echo protection: mic gating timestamps (ms) — prevents the model from hearing its own voice
   const micOpenTimeRef = useRef<number>(0);
@@ -76,9 +76,14 @@ export function VoiceDialog({
 
   // Initialize or unlock Output AudioContext
   const ensureOutputCtx = async () => {
-    if (!outputAudioCtxRef.current) {
+    if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === 'closed') {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       outputAudioCtxRef.current = new AudioCtx();
+      // Master gain allows smooth fade in/out of playback (no hard-stop clicks)
+      const master = outputAudioCtxRef.current.createGain();
+      master.gain.value = 1;
+      master.connect(outputAudioCtxRef.current.destination);
+      outputGainRef.current = master;
     }
     if (outputAudioCtxRef.current.state === 'suspended') {
       try {
@@ -94,13 +99,40 @@ export function VoiceDialog({
   };
 
   const clearAudioQueue = () => {
-    activeSourcesRef.current.forEach(source => {
-      try { source.stop(); } catch (e) {}
-    });
+    const ctx = outputAudioCtxRef.current;
+    const master = outputGainRef.current;
+    const sources = activeSourcesRef.current;
     activeSourcesRef.current = [];
     lastPlaybackEndRef.current = performance.now();
-    if (outputAudioCtxRef.current) {
-      nextPlayTimeRef.current = outputAudioCtxRef.current.currentTime;
+
+    if (ctx && master && sources.length > 0 && ctx.state !== 'closed') {
+      // Fade out over ~12ms before stopping so interrupting never produces a click
+      const now = ctx.currentTime;
+      try {
+        master.gain.cancelScheduledValues(now);
+        master.gain.setValueAtTime(master.gain.value, now);
+        master.gain.linearRampToValueAtTime(0.0001, now + 0.012);
+      } catch (e) {}
+      setTimeout(() => {
+        sources.forEach(source => {
+          try { source.stop(); } catch (e) {}
+        });
+        try {
+          if (ctx.state !== 'closed') {
+            const t = ctx.currentTime;
+            master.gain.cancelScheduledValues(t);
+            master.gain.setValueAtTime(1, t);
+          }
+        } catch (e) {}
+      }, 20);
+    } else {
+      sources.forEach(source => {
+        try { source.stop(); } catch (e) {}
+      });
+    }
+
+    if (ctx && ctx.state !== 'closed') {
+      nextPlayTimeRef.current = ctx.currentTime;
     }
   };
 
@@ -126,19 +158,24 @@ export function VoiceDialog({
         float32Data[i] = int16View[i] / 32768.0;
       }
 
+      const currentTime = ctx.currentTime;
+      // If queue is empty or lagged behind, sync playback time to current time + 20ms
+      if (activeSourcesRef.current.length === 0 || nextPlayTimeRef.current < currentTime) {
+        nextPlayTimeRef.current = currentTime + 0.02;
+        // Speech onset click guard: tiny 5ms fade-in on the first samples of a fresh burst
+        const fadeLen = Math.min(120, float32Data.length);
+        for (let i = 0; i < fadeLen; i++) {
+          float32Data[i] *= i / fadeLen;
+        }
+      }
+
       // Gemini output rate is 24000Hz PCM
       const audioBuffer = ctx.createBuffer(1, float32Data.length, 24000);
       audioBuffer.getChannelData(0).set(float32Data);
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(ctx.destination);
-
-      const currentTime = ctx.currentTime;
-      // If queue is empty or lagged behind, sync playback time to current time + 20ms
-      if (activeSourcesRef.current.length === 0 || nextPlayTimeRef.current < currentTime) {
-        nextPlayTimeRef.current = currentTime + 0.02;
-      }
+      source.connect(outputGainRef.current || ctx.destination);
 
       const startTime = nextPlayTimeRef.current;
       source.start(startTime);
@@ -189,12 +226,6 @@ export function VoiceDialog({
         });
       } catch (e) {}
       mediaStreamRef.current = null;
-    }
-    if (inputAudioCtxRef.current) {
-      try {
-        inputAudioCtxRef.current.close().catch(() => {});
-      } catch (e) {}
-      inputAudioCtxRef.current = null;
     }
     if (wsRef.current) {
       try {
@@ -394,12 +425,10 @@ export function VoiceDialog({
 
       mediaStreamRef.current = stream;
 
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioCtx({ sampleRate: 16000 });
-      inputAudioCtxRef.current = audioCtx;
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
+      // Reuse the single native-rate AudioContext for mic capture too:
+      // creating a second 16kHz context forces an audio device reconfiguration,
+      // which is exactly what produces the audible pop when the session starts.
+      const audioCtx = await ensureOutputCtx();
       // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
       micOpenTimeRef.current = performance.now();
 
@@ -408,9 +437,7 @@ export function VoiceDialog({
           t.enabled = false;
           t.stop();
         });
-        try { audioCtx.close(); } catch (e) {}
         mediaStreamRef.current = null;
-        inputAudioCtxRef.current = null;
         return;
       }
 
@@ -450,11 +477,28 @@ export function VoiceDialog({
         let gateSum = 0;
         for (let i = 0; i < inputData.length; i++) gateSum += inputData[i] * inputData[i];
         if (Math.sqrt(gateSum / inputData.length) < 0.004) return;
-        
+
+        // Downsample from the context's native rate to 16kHz for Gemini Live
+        const nativeRate = audioCtx.sampleRate;
+        let pcmData = inputData;
+        if (nativeRate > 16000 * 1.01) {
+          const ratio = nativeRate / 16000;
+          const outLen = Math.floor(inputData.length / ratio);
+          const down = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i++) {
+            const start = Math.floor(i * ratio);
+            const end = Math.min(Math.floor((i + 1) * ratio), inputData.length);
+            let acc = 0;
+            for (let j = start; j < end; j++) acc += inputData[j];
+            down[i] = acc / Math.max(1, end - start);
+          }
+          pcmData = down;
+        }
+
         // Convert Float32Array to Int16Array PCM
-        const pcm16 = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          let s = Math.max(-1, Math.min(1, inputData[i]));
+        const pcm16 = new Int16Array(pcmData.length);
+        for (let i = 0; i < pcmData.length; i++) {
+          let s = Math.max(-1, Math.min(1, pcmData[i]));
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
