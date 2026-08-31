@@ -337,11 +337,11 @@ export class LiveCallEngine {
     }
     if (nowMs - this.lastPlaybackEnd < PLAYBACK_TAIL_MS) { this.stats.tailFrames++; return; }
 
-    // Gentle noise gate
-    if (rms < NOISE_GATE_RMS) {
-      this.stats.silentFrames++;
-      return;
-    }
+    // NOTE: no client-side noise gate — the stream must stay continuous.
+    // Gaps (dropped "silent" frames) make native-audio Live models emit
+    // empty/interrupted turns. Gemini's server-side VAD handles silence,
+    // noise and turn-taking officially.
+    if (rms < NOISE_GATE_RMS) this.stats.silentFrames++;
 
     const pcm = this.usingNativeFallback ? resampleTo16k(data, ctxRate) : data;
     const bytes = new Uint8Array(pcm.length * 2);
