@@ -6,6 +6,7 @@ import { Mail, Lock, User, ArrowLeft, ArrowRight, Loader2, Globe, ShieldCheck, E
 import { useAppTheme } from '../lib/themeService';
 import { useLanguage } from '../lib/LanguageContext';
 import { signInWithGoogle, registerWithEmail, loginWithEmail, saveUserConsent } from '../lib/firebase';
+import { requestNotificationPermission } from '../services/notificationService';
 import { TermsAndPrivacyModal } from './TermsAndPrivacyModal';
 import { OtpVerificationView } from './OtpVerificationView';
 import { sendOtp, getDeviceId, getDeviceInfo } from '../lib/otpService';
@@ -94,6 +95,13 @@ export function Auth({ onAuth, onClose }: AuthProps) {
     setAuthError(null);
   };
 
+  // Ask for notification permission the moment login completes, so the browser
+  // prompt appears right after signing in (fire-and-forget, never blocks login).
+  const triggerNotificationPermission = (uid?: string) => {
+    if (!uid) return;
+    requestNotificationPermission(uid).catch((e) => console.warn('Notification permission request note:', e));
+  };
+
   const handleOtpVerified = async () => {
     if (!pendingOtp) return;
     setIsLoading(true);
@@ -136,6 +144,7 @@ export function Auth({ onAuth, onClose }: AuthProps) {
         localStorage.setItem('app-user-country', pendingOtp.country || selectedCountry);
         localStorage.setItem('app-terms-accepted', 'true');
         localStorage.setItem('app-user-auth-type', 'email');
+        triggerNotificationPermission(user.uid);
         setPendingOtp(null);
         onAuth();
       } else if (pendingOtp.purpose === 'login_new_device') {
@@ -172,6 +181,7 @@ export function Auth({ onAuth, onClose }: AuthProps) {
           localStorage.setItem('app-terms-accepted', 'true');
           localStorage.setItem('app-user-auth-type', 'email');
         }
+        triggerNotificationPermission(uid || auth.currentUser?.uid);
         setPendingOtp(null);
         onAuth();
       }
@@ -244,6 +254,7 @@ export function Auth({ onAuth, onClose }: AuthProps) {
           if (userData?.avatar || user.photoURL) localStorage.setItem('app-user-avatar', userData?.avatar || user.photoURL);
           localStorage.setItem('app-terms-accepted', 'true');
           localStorage.setItem('app-user-auth-type', 'email');
+          triggerNotificationPermission(user.uid);
           onAuth();
         } else {
           // New device or first login from this browser -> Send OTP code
@@ -325,6 +336,7 @@ export function Auth({ onAuth, onClose }: AuthProps) {
           localStorage.setItem('app-user-avatar', userData.avatar || userAvatar);
         }
         localStorage.setItem('app-user-auth-type', 'google');
+        triggerNotificationPermission(user.uid);
         onAuth();
       } else {
         // New Google account (or incomplete onboarding) -> Prompt them to choose Country and accept Terms
@@ -395,6 +407,7 @@ export function Auth({ onAuth, onClose }: AuthProps) {
       if (photoURL) localStorage.setItem('app-user-avatar', photoURL);
       localStorage.setItem('app-user-auth-type', 'google');
 
+      triggerNotificationPermission(uid);
       onAuth();
     } catch (err: any) {
       console.error('Error completing Google registration:', err);

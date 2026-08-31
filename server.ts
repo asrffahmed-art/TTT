@@ -18,6 +18,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { initializeApp as initFirebaseAdmin, getApps as getAdminApps } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
+import webpush from "web-push";
 import { initializeApp as initWebFirebase, getApps as getWebApps } from "firebase/app";
 import { 
   initializeFirestore as initializeWebFirestore, 
@@ -47,6 +48,66 @@ if (!getAdminApps().length) {
     });
   } catch (err) {
     console.error("Firebase admin initializeApp error:", err);
+  }
+}
+
+// ---- W3C Web Push (official standard) configuration ----
+// The browser subscribes with VAPID_PUBLIC_KEY (embedded in the client bundle);
+// this server delivers pushes with the matching private key using the standard
+// web-push protocol. No Firebase service account is needed for delivery.
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:onq6974@gmail.com";
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  try {
+    webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+    console.log("Web Push VAPID configured.");
+  } catch (err) {
+    console.error("VAPID setup error:", err);
+  }
+}
+
+/** Build the JSON payload the THOTH service worker expects. */
+function buildWebPushPayload(opts: {
+  title: string;
+  body: string;
+  deepLink?: string;
+  notificationId?: string;
+  eventId?: string;
+  category?: string;
+  icon?: string;
+}) {
+  return {
+    notification: {
+      title: opts.title,
+      body: opts.body,
+      icon: opts.icon || "/icons/icon-192.png",
+      badge: "/icons/icon-192-maskable.png"
+    },
+    data: {
+      deepLink: opts.deepLink || "/",
+      notificationId: opts.notificationId || "",
+      eventId: opts.eventId || "",
+      category: opts.category || "General"
+    }
+  };
+}
+
+/**
+ * Deliver one web push to a subscription JSON.
+ * Returns 'ok' | 'gone' (endpoint unsubscribed → cleanup) | 'failed'.
+ */
+async function sendWebPushToSubscription(subscriptionJson: string, payload: any): Promise<"ok" | "gone" | "failed"> {
+  try {
+    const sub = JSON.parse(subscriptionJson);
+    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) return "failed";
+    await webpush.sendNotification(sub, JSON.stringify(payload), { TTL: 3 * 24 * 3600 });
+    return "ok";
+  } catch (err: any) {
+    const statusCode = err?.statusCode;
+    if (statusCode === 404 || statusCode === 410) return "gone";
+    console.error("Web push send failed:", statusCode || "", err?.message || err);
+    return "failed";
   }
 }
 
@@ -4040,65 +4101,44 @@ ${searchContext}
       return { success: true, notificationId, sentCount: 0, reason: "لم يتم العثور على أجهزة مسجلة ومفعلة للإشعارات." };
     }
 
-    // 6. Send FCM Multicast Push
+    // 6. Send pushes via the official W3C Web Push protocol (VAPID)
     let successCount = 0;
     let failureCount = 0;
     let cleanedTokensCount = 0;
 
-    try {
-      const messaging = getMessaging();
-      const batchResponse = await messaging.sendEachForMulticast({
-        tokens: allTokens,
-        notification: {
-          title: title || "🔔 THOTH Daily",
-          body: body || "أهم حدث اليوم — اضغط لمعرفة التفاصيل."
-        },
-        data: {
-          notificationId,
-          eventId: eventId || "",
-          deepLink,
-          category: topic || "AI",
-          createdAt: new Date().toISOString()
-        },
-        webpush: {
-          notification: {
-            title: title || "🔔 THOTH Daily",
-            body: body || "أهم حدث اليوم — اضغط لمعرفة التفاصيل.",
-            icon: "/favicon.ico",
-            badge: "/favicon.ico"
-          },
-          fcmOptions: {
-            link: deepLink
-          }
-        }
-      });
+    const pushPayload = buildWebPushPayload({
+      title: title || "🔔 THOTH Daily",
+      body: body || "أهم حدث اليوم — اضغط لمعرفة التفاصيل.",
+      deepLink,
+      notificationId,
+      eventId: eventId || "",
+      category: topic || "AI"
+    });
 
-      successCount = batchResponse.successCount;
-      failureCount = batchResponse.failureCount;
-
-      // Clean invalid tokens automatically (Requirement 11)
-      for (let i = 0; i < batchResponse.responses.length; i++) {
-        const resp = batchResponse.responses[i];
-        if (!resp.success) {
-          const errCode = resp.error?.code;
-          if (
-            errCode === 'messaging/registration-token-not-registered' ||
-            errCode === 'messaging/invalid-registration-token' ||
-            errCode === 'messaging/mismatched-credential'
-          ) {
-            const { userId: uId, tokenId: tId } = tokenRefs[i];
-            try {
-              await deleteDoc(doc(dbWeb, "users", uId, "notificationTokens", tId));
-              cleanedTokensCount++;
-            } catch (delErr) {
-              console.error("Token cleanup error:", delErr);
-            }
-          }
-        }
+    for (let i = 0; i < allTokens.length; i++) {
+      const tokenValue = allTokens[i];
+      // Web Push subscriptions are stored as JSON. Legacy FCM-only tokens
+      // (registered before this change) cannot be delivered without Firebase
+      // Admin credentials — count them as failed until users re-subscribe.
+      if (!tokenValue || !tokenValue.trimStart().startsWith("{")) {
+        failureCount++;
+        continue;
       }
-
-    } catch (pushErr) {
-      console.error("Error sending FCM multicast:", pushErr);
+      const result = await sendWebPushToSubscription(tokenValue, pushPayload);
+      if (result === "ok") {
+        successCount++;
+      } else if (result === "gone") {
+        // Endpoint no longer registered → clean up automatically
+        const { userId: uId, tokenId: tId } = tokenRefs[i];
+        try {
+          await deleteDoc(doc(dbWeb, "users", uId, "notificationTokens", tId));
+          cleanedTokensCount++;
+        } catch (delErr) {
+          console.error("Token cleanup error:", delErr);
+        }
+      } else {
+        failureCount++;
+      }
     }
 
     return {
@@ -4112,59 +4152,63 @@ ${searchContext}
     };
   }
 
-  // API Route: Test FCM Push Notification
+  // API Route: Test Push Notification (W3C Web Push / VAPID)
   app.post("/api/daily-notification/test-push", async (req, res) => {
     try {
       const { userId, token } = req.body;
       if (!token) {
-        return res.status(400).json({ error: "FCM Token مطلوب لإرسال الإشعار التجريبي." });
+        return res.status(400).json({ error: "اشتراك الإشعارات مطلوب لإرسال الإشعار التجريبي." });
       }
 
-      const messaging = getMessaging();
-      const testPayload = {
-        token: token,
-        notification: {
+      // Standard Web Push subscription JSON (client sends the subscription)
+      if (token.trimStart().startsWith("{")) {
+        const payload = buildWebPushPayload({
           title: "🔔 THOTH Daily - إشعار تجريبي",
-          body: "تهانينا! نظام الإشعارات اليومية FCM يعمل بنجاح على متصفحك وجهازك الآن."
-        },
-        data: {
+          body: "تهانينا! نظام الإشعارات اليومية يعمل بنجاح على متصفحك وجهازك الآن.",
+          deepLink: "/?test=true",
           notificationId: "test_" + Date.now(),
           eventId: "test_event",
-          deepLink: "/?test=true",
           category: "AI"
-        },
-        webpush: {
-          notification: {
-            title: "🔔 THOTH Daily - إشعار تجريبي",
-            body: "تهانينا! نظام الإشعارات اليومية FCM يعمل بنجاح على متصفحك وجهازك الآن.",
-            icon: "/favicon.ico"
-          },
-          fcmOptions: {
-            link: "/?test=true"
+        });
+        const result = await sendWebPushToSubscription(token, payload);
+        if (result === "ok") {
+          return res.json({ success: true, message: "تم إرسال الإشعار التجريبي بنجاح عبر Web Push!" });
+        }
+        if (result === "gone") {
+          // Clean up the dead subscription document if the userId is known
+          if (userId) {
+            try {
+              const tSnap = await getDocs(collection(dbWeb, "users", userId, "notificationTokens"));
+              for (const tDoc of tSnap.docs) {
+                if (tDoc.data()?.subscription === token) {
+                  await deleteDoc(tDoc.ref);
+                }
+              }
+            } catch { /* best effort */ }
           }
+          return res.status(410).json({ error: "الاشتراك غير صالح (Gone). أعد تفعيل الإشعارات من الإعدادات." });
         }
-      };
-
-      const messageId = await messaging.send(testPayload);
-      res.json({ success: true, messageId, message: "تم إرسال الإشعار التجريبي بنجاح عبر FCM!" });
-    } catch (err: any) {
-      console.error("Test FCM push failed:", err);
-      
-      // Auto cleanup token if invalid
-      if (req.body.userId && req.body.token) {
-        const errCode = err?.code;
-        if (
-          errCode === 'messaging/registration-token-not-registered' ||
-          errCode === 'messaging/invalid-registration-token'
-        ) {
-          try {
-            const tokenId = req.body.token.substring(0, 32);
-            await deleteDoc(doc(dbWeb, "users", req.body.userId, "notificationTokens", tokenId));
-          } catch (e) {}
-        }
+        return res.status(500).json({ error: "فشل إرسال الإشعار التجريبي عبر Web Push." });
       }
 
-      res.status(500).json({ error: err?.message || "فشل إرسال الإشعار التجريبي عبر FCM" });
+      // Legacy FCM token path (kept for backward compatibility)
+      try {
+        const messaging = getMessaging();
+        const messageId = await messaging.send({
+          token: token,
+          notification: {
+            title: "🔔 THOTH Daily - إشعار تجريبي",
+            body: "تهانينا! نظام الإشعارات اليومية يعمل بنجاح على متصفحك وجهازك الآن."
+          }
+        });
+        return res.json({ success: true, messageId, message: "تم إرسال الإشعار التجريبي بنجاح!" });
+      } catch (fcmErr: any) {
+        console.error("Test push (legacy FCM) failed:", fcmErr?.message);
+        return res.status(500).json({ error: fcmErr?.message || "فشل إرسال الإشعار التجريبي." });
+      }
+    } catch (err: any) {
+      console.error("Test push failed:", err);
+      res.status(500).json({ error: err?.message || "فشل إرسال الإشعار التجريبي." });
     }
   });
 
@@ -4631,36 +4675,28 @@ ${searchContext}
       let sentCount = 0;
       let failureCount = 0;
 
-      if (allTokens.length > 0) {
-        const messaging = getMessaging();
-        const payload = {
-          tokens: allTokens,
-          notification: {
-            title: title,
-            body: body,
-            ...(imageUrl ? { imageUrl } : {})
-          },
-          data: {
-            notificationId: "broadcast_" + Date.now(),
-            category: topic || "General",
-            deepLink: linkUrl || "/"
-          },
-          webpush: {
-            notification: {
-              title: title,
-              body: body,
-              icon: "/favicon.ico",
-              ...(imageUrl ? { image: imageUrl } : {})
-            },
-            fcmOptions: {
-              link: linkUrl || "/"
-            }
-          }
-        };
+      const broadcastPayload = buildWebPushPayload({
+        title: title,
+        body: body,
+        deepLink: linkUrl || "/",
+        notificationId: "broadcast_" + Date.now(),
+        category: topic || "General",
+        icon: imageUrl || undefined
+      });
 
-        const batchResponse = await messaging.sendEachForMulticast(payload);
-        sentCount = batchResponse.successCount;
-        failureCount = batchResponse.failureCount;
+      for (const tokenValue of allTokens) {
+        // Web Push subscriptions are stored as JSON; legacy FCM tokens are
+        // counted as failed (cannot be delivered without admin credentials).
+        if (!tokenValue || !tokenValue.trimStart().startsWith("{")) {
+          failureCount++;
+          continue;
+        }
+        const result = await sendWebPushToSubscription(tokenValue, broadcastPayload);
+        if (result === "ok") {
+          sentCount++;
+        } else {
+          failureCount++;
+        }
       }
 
       // Log broadcast in Firestore

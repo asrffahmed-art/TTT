@@ -26,7 +26,7 @@ import { Auth } from './components/Auth';
 import { Navigation } from './components/Navigation';
 import { Header } from './components/Header';
 import { DailyBriefingModal } from './components/DailyBriefingModal';
-import { listenToForegroundMessages } from './services/notificationService';
+import { listenToForegroundMessages, autoRequestNotificationsAfterLogin, requestNotificationPermission } from './services/notificationService';
 import { THEMES, getStoredThemeId, setStoredTheme, useAppTheme } from './lib/themeService';
 import { adTracker } from './lib/adTrackingService';
 
@@ -55,6 +55,7 @@ export default function App() {
   }, []);
   const [dailyNotificationId, setDailyNotificationId] = useState<string | null>(null);
   const [foregroundToast, setForegroundToast] = useState<any>(null);
+  const [showNotifPermissionBanner, setShowNotifPermissionBanner] = useState(false);
   const [announcementBanner, setAnnouncementBanner] = useState<{ text: string; type: 'info' | 'warning' | 'alert' } | null>(null);
   const [paymentModalData, setPaymentModalData] = useState<PaymentModalData | null>(null);
 
@@ -164,6 +165,29 @@ export default function App() {
     return () => window.removeEventListener('popstate', checkDeepLink);
   }, []);
 
+  // ---- Notification permission banner handlers ----
+  const handleEnableNotifications = async () => {
+    const uid = currentUser?.uid || localStorage.getItem('app-user-id') || '';
+    if (!('Notification' in window)) {
+      setShowNotifPermissionBanner(false);
+      return;
+    }
+    const result = await requestNotificationPermission(uid);
+    if (result.success) {
+      setShowNotifPermissionBanner(false);
+      setForegroundToast({ title: '🔔 تم تفعيل الإشعارات!', body: 'هتوصلك أهم التحديثات فورًا حتى لو التطبيق مقفول.', notificationId: null, isInfo: true });
+      window.dispatchEvent(new Event('thoth_notifications_enabled'));
+    } else {
+      setForegroundToast({ title: '⚠️ لم يتم منح إذن الإشعارات', body: result.error || 'يمكنك تفعيل الإشعارات لاحقًا من الإعدادات.', notificationId: null, isInfo: true });
+      if (Notification.permission === 'denied') setShowNotifPermissionBanner(false);
+    }
+  };
+
+  const handleDismissNotifBanner = () => {
+    sessionStorage.setItem('thoth_notif_banner_dismissed', '1');
+    setShowNotifPermissionBanner(false);
+  };
+
   // Listen for Foreground FCM Push Messages
   useEffect(() => {
     const unsubscribeFCM = listenToForegroundMessages((payload) => {
@@ -221,6 +245,23 @@ export default function App() {
             if (data.interests) localStorage.setItem('app-user-interests', data.interests);
             if (data.friends) localStorage.setItem('app-user-friends', data.friends);
             if (data.bio) localStorage.setItem('app-user-bio', data.bio);
+
+            // Notifications: silently refresh the push subscription when the
+            // permission is already granted; otherwise surface the in-app
+            // enable banner (the banner button provides the user gesture the
+            // browser needs to show the permission prompt).
+            if ('Notification' in window) {
+              if (Notification.permission === 'granted') {
+                autoRequestNotificationsAfterLogin(user.uid);
+                setShowNotifPermissionBanner(false);
+              } else if (Notification.permission === 'default') {
+                if (!sessionStorage.getItem('thoth_notif_banner_dismissed')) {
+                  setShowNotifPermissionBanner(true);
+                }
+              } else {
+                setShowNotifPermissionBanner(false);
+              }
+            }
           } else {
             // User is signed in to Firebase Auth but onboarding is not completed in Firestore database
             setIsAuthenticated(false);
@@ -236,7 +277,7 @@ export default function App() {
         setIsAuthenticated(false);
         localStorage.removeItem('isAuth');
         window.dispatchEvent(new Event('thoth_auth_changed'));
-        localStorage.removeItem('app-user-id');
+        setShowNotifPermissionBanner(false);
         localStorage.removeItem('app-user-name');
         localStorage.removeItem('app-user-email');
         localStorage.removeItem('app-user-avatar');
@@ -385,6 +426,39 @@ export default function App() {
         </div>
       )}
 
+      {/* Notification Permission Enable Banner (post-login) */}
+      {showNotifPermissionBanner && (
+        <div className="fixed top-20 right-4 left-4 sm:left-auto sm:w-96 z-50 bg-[#141824] border border-pink-500/40 p-4 rounded-2xl shadow-2xl animate-in slide-in-from-top duration-300 flex items-start gap-3 text-right">
+          <div className="w-10 h-10 rounded-xl bg-pink-500/20 text-pink-400 border border-pink-500/30 flex items-center justify-center shrink-0">
+            <Bell className="w-5 h-5" />
+          </div>
+          <div className="flex-1 overflow-hidden">
+            <h4 className="text-sm font-bold text-white">فعّل إشعارات THOTH</h4>
+            <p className="text-xs text-white/70">خليك أول من يعرف بأهم أحداث مجالات اهتمامك — محتاجين موافقتك على إذن الإشعارات.</p>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                onClick={handleEnableNotifications}
+                className="text-xs font-bold bg-pink-500 hover:bg-pink-600 text-white px-3 py-1.5 rounded-lg transition-colors"
+              >
+                السماح بالإشعارات
+              </button>
+              <button
+                onClick={handleDismissNotifBanner}
+                className="text-xs text-white/50 hover:text-white px-2 py-1.5"
+              >
+                ليس الآن
+              </button>
+            </div>
+          </div>
+          <button
+            onClick={handleDismissNotifBanner}
+            className="p-1 text-white/40 hover:text-white rounded-lg hover:bg-white/10"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Foreground Notification Toast Banner */}
       {foregroundToast && (
         <div className="fixed top-20 right-4 left-4 sm:left-auto sm:w-96 z-50 bg-[#141824] border border-pink-500/50 p-4 rounded-2xl shadow-2xl animate-in slide-in-from-top duration-300 flex items-start gap-3 text-right">
@@ -394,16 +468,18 @@ export default function App() {
           <div className="flex-1 overflow-hidden">
             <h4 className="text-sm font-bold text-white">{foregroundToast.title}</h4>
             <p className="text-xs text-white/70 truncate">{foregroundToast.body}</p>
-            <button
-              onClick={() => {
-                if (foregroundToast.notificationId) setDailyNotificationId(foregroundToast.notificationId);
-                setIsDailyBriefingOpen(true);
-                setForegroundToast(null);
-              }}
-              className="mt-2 text-xs font-bold text-pink-400 hover:text-pink-300 underline"
-            >
-              عرض حدث اليوم والتفاصيل الكاملة ←
-            </button>
+            {!foregroundToast.isInfo && (
+              <button
+                onClick={() => {
+                  if (foregroundToast.notificationId) setDailyNotificationId(foregroundToast.notificationId);
+                  setIsDailyBriefingOpen(true);
+                  setForegroundToast(null);
+                }}
+                className="mt-2 text-xs font-bold text-pink-400 hover:text-pink-300 underline"
+              >
+                عرض حدث اليوم والتفاصيل الكاملة ←
+              </button>
+            )}
           </div>
           <button
             onClick={() => setForegroundToast(null)}

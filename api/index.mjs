@@ -16,6 +16,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { GoogleGenAI, Modality } from "@google/genai";
 import { initializeApp as initFirebaseAdmin, getApps as getAdminApps } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
+import webpush from "web-push";
 import { initializeApp as initWebFirebase, getApps as getWebApps } from "firebase/app";
 import {
   initializeFirestore as initializeWebFirestore,
@@ -538,6 +539,46 @@ if (!getAdminApps().length) {
     });
   } catch (err) {
     console.error("Firebase admin initializeApp error:", err);
+  }
+}
+var VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
+var VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
+var VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:onq6974@gmail.com";
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  try {
+    webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+    console.log("Web Push VAPID configured.");
+  } catch (err) {
+    console.error("VAPID setup error:", err);
+  }
+}
+function buildWebPushPayload(opts) {
+  return {
+    notification: {
+      title: opts.title,
+      body: opts.body,
+      icon: opts.icon || "/icons/icon-192.png",
+      badge: "/icons/icon-192-maskable.png"
+    },
+    data: {
+      deepLink: opts.deepLink || "/",
+      notificationId: opts.notificationId || "",
+      eventId: opts.eventId || "",
+      category: opts.category || "General"
+    }
+  };
+}
+async function sendWebPushToSubscription(subscriptionJson, payload) {
+  try {
+    const sub = JSON.parse(subscriptionJson);
+    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) return "failed";
+    await webpush.sendNotification(sub, JSON.stringify(payload), { TTL: 3 * 24 * 3600 });
+    return "ok";
+  } catch (err) {
+    const statusCode = err?.statusCode;
+    if (statusCode === 404 || statusCode === 410) return "gone";
+    console.error("Web push send failed:", statusCode || "", err?.message || err);
+    return "failed";
   }
 }
 var webApp = getWebApps().length > 0 ? getWebApps()[0] : initWebFirebase(firebase_applet_config_default);
@@ -3811,52 +3852,34 @@ ${searchContext}
     let successCount = 0;
     let failureCount = 0;
     let cleanedTokensCount = 0;
-    try {
-      const messaging = getMessaging();
-      const batchResponse = await messaging.sendEachForMulticast({
-        tokens: allTokens,
-        notification: {
-          title: title || "\u{1F514} THOTH Daily",
-          body: body || "\u0623\u0647\u0645 \u062D\u062F\u062B \u0627\u0644\u064A\u0648\u0645 \u2014 \u0627\u0636\u063A\u0637 \u0644\u0645\u0639\u0631\u0641\u0629 \u0627\u0644\u062A\u0641\u0627\u0635\u064A\u0644."
-        },
-        data: {
-          notificationId,
-          eventId: eventId || "",
-          deepLink,
-          category: topic || "AI",
-          createdAt: (/* @__PURE__ */ new Date()).toISOString()
-        },
-        webpush: {
-          notification: {
-            title: title || "\u{1F514} THOTH Daily",
-            body: body || "\u0623\u0647\u0645 \u062D\u062F\u062B \u0627\u0644\u064A\u0648\u0645 \u2014 \u0627\u0636\u063A\u0637 \u0644\u0645\u0639\u0631\u0641\u0629 \u0627\u0644\u062A\u0641\u0627\u0635\u064A\u0644.",
-            icon: "/favicon.ico",
-            badge: "/favicon.ico"
-          },
-          fcmOptions: {
-            link: deepLink
-          }
-        }
-      });
-      successCount = batchResponse.successCount;
-      failureCount = batchResponse.failureCount;
-      for (let i = 0; i < batchResponse.responses.length; i++) {
-        const resp = batchResponse.responses[i];
-        if (!resp.success) {
-          const errCode = resp.error?.code;
-          if (errCode === "messaging/registration-token-not-registered" || errCode === "messaging/invalid-registration-token" || errCode === "messaging/mismatched-credential") {
-            const { userId: uId, tokenId: tId } = tokenRefs[i];
-            try {
-              await deleteDoc2(doc2(dbWeb, "users", uId, "notificationTokens", tId));
-              cleanedTokensCount++;
-            } catch (delErr) {
-              console.error("Token cleanup error:", delErr);
-            }
-          }
-        }
+    const pushPayload = buildWebPushPayload({
+      title: title || "\u{1F514} THOTH Daily",
+      body: body || "\u0623\u0647\u0645 \u062D\u062F\u062B \u0627\u0644\u064A\u0648\u0645 \u2014 \u0627\u0636\u063A\u0637 \u0644\u0645\u0639\u0631\u0641\u0629 \u0627\u0644\u062A\u0641\u0627\u0635\u064A\u0644.",
+      deepLink,
+      notificationId,
+      eventId: eventId || "",
+      category: topic || "AI"
+    });
+    for (let i = 0; i < allTokens.length; i++) {
+      const tokenValue = allTokens[i];
+      if (!tokenValue || !tokenValue.trimStart().startsWith("{")) {
+        failureCount++;
+        continue;
       }
-    } catch (pushErr) {
-      console.error("Error sending FCM multicast:", pushErr);
+      const result = await sendWebPushToSubscription(tokenValue, pushPayload);
+      if (result === "ok") {
+        successCount++;
+      } else if (result === "gone") {
+        const { userId: uId, tokenId: tId } = tokenRefs[i];
+        try {
+          await deleteDoc2(doc2(dbWeb, "users", uId, "notificationTokens", tId));
+          cleanedTokensCount++;
+        } catch (delErr) {
+          console.error("Token cleanup error:", delErr);
+        }
+      } else {
+        failureCount++;
+      }
     }
     return {
       success: true,
@@ -3872,47 +3895,54 @@ ${searchContext}
     try {
       const { userId, token } = req.body;
       if (!token) {
-        return res.status(400).json({ error: "FCM Token \u0645\u0637\u0644\u0648\u0628 \u0644\u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A." });
+        return res.status(400).json({ error: "\u0627\u0634\u062A\u0631\u0627\u0643 \u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062A \u0645\u0637\u0644\u0648\u0628 \u0644\u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A." });
       }
-      const messaging = getMessaging();
-      const testPayload = {
-        token,
-        notification: {
+      if (token.trimStart().startsWith("{")) {
+        const payload = buildWebPushPayload({
           title: "\u{1F514} THOTH Daily - \u0625\u0634\u0639\u0627\u0631 \u062A\u062C\u0631\u064A\u0628\u064A",
-          body: "\u062A\u0647\u0627\u0646\u064A\u0646\u0627! \u0646\u0638\u0627\u0645 \u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062A \u0627\u0644\u064A\u0648\u0645\u064A\u0629 FCM \u064A\u0639\u0645\u0644 \u0628\u0646\u062C\u0627\u062D \u0639\u0644\u0649 \u0645\u062A\u0635\u0641\u062D\u0643 \u0648\u062C\u0647\u0627\u0632\u0643 \u0627\u0644\u0622\u0646."
-        },
-        data: {
+          body: "\u062A\u0647\u0627\u0646\u064A\u0646\u0627! \u0646\u0638\u0627\u0645 \u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062A \u0627\u0644\u064A\u0648\u0645\u064A\u0629 \u064A\u0639\u0645\u0644 \u0628\u0646\u062C\u0627\u062D \u0639\u0644\u0649 \u0645\u062A\u0635\u0641\u062D\u0643 \u0648\u062C\u0647\u0627\u0632\u0643 \u0627\u0644\u0622\u0646.",
+          deepLink: "/?test=true",
           notificationId: "test_" + Date.now(),
           eventId: "test_event",
-          deepLink: "/?test=true",
           category: "AI"
-        },
-        webpush: {
+        });
+        const result = await sendWebPushToSubscription(token, payload);
+        if (result === "ok") {
+          return res.json({ success: true, message: "\u062A\u0645 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A \u0628\u0646\u062C\u0627\u062D \u0639\u0628\u0631 Web Push!" });
+        }
+        if (result === "gone") {
+          if (userId) {
+            try {
+              const tSnap = await getDocs2(collection2(dbWeb, "users", userId, "notificationTokens"));
+              for (const tDoc of tSnap.docs) {
+                if (tDoc.data()?.subscription === token) {
+                  await deleteDoc2(tDoc.ref);
+                }
+              }
+            } catch {
+            }
+          }
+          return res.status(410).json({ error: "\u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D (Gone). \u0623\u0639\u062F \u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062A \u0645\u0646 \u0627\u0644\u0625\u0639\u062F\u0627\u062F\u0627\u062A." });
+        }
+        return res.status(500).json({ error: "\u0641\u0634\u0644 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A \u0639\u0628\u0631 Web Push." });
+      }
+      try {
+        const messaging = getMessaging();
+        const messageId = await messaging.send({
+          token,
           notification: {
             title: "\u{1F514} THOTH Daily - \u0625\u0634\u0639\u0627\u0631 \u062A\u062C\u0631\u064A\u0628\u064A",
-            body: "\u062A\u0647\u0627\u0646\u064A\u0646\u0627! \u0646\u0638\u0627\u0645 \u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062A \u0627\u0644\u064A\u0648\u0645\u064A\u0629 FCM \u064A\u0639\u0645\u0644 \u0628\u0646\u062C\u0627\u062D \u0639\u0644\u0649 \u0645\u062A\u0635\u0641\u062D\u0643 \u0648\u062C\u0647\u0627\u0632\u0643 \u0627\u0644\u0622\u0646.",
-            icon: "/favicon.ico"
-          },
-          fcmOptions: {
-            link: "/?test=true"
+            body: "\u062A\u0647\u0627\u0646\u064A\u0646\u0627! \u0646\u0638\u0627\u0645 \u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062A \u0627\u0644\u064A\u0648\u0645\u064A\u0629 \u064A\u0639\u0645\u0644 \u0628\u0646\u062C\u0627\u062D \u0639\u0644\u0649 \u0645\u062A\u0635\u0641\u062D\u0643 \u0648\u062C\u0647\u0627\u0632\u0643 \u0627\u0644\u0622\u0646."
           }
-        }
-      };
-      const messageId = await messaging.send(testPayload);
-      res.json({ success: true, messageId, message: "\u062A\u0645 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A \u0628\u0646\u062C\u0627\u062D \u0639\u0628\u0631 FCM!" });
-    } catch (err) {
-      console.error("Test FCM push failed:", err);
-      if (req.body.userId && req.body.token) {
-        const errCode = err?.code;
-        if (errCode === "messaging/registration-token-not-registered" || errCode === "messaging/invalid-registration-token") {
-          try {
-            const tokenId = req.body.token.substring(0, 32);
-            await deleteDoc2(doc2(dbWeb, "users", req.body.userId, "notificationTokens", tokenId));
-          } catch (e) {
-          }
-        }
+        });
+        return res.json({ success: true, messageId, message: "\u062A\u0645 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A \u0628\u0646\u062C\u0627\u062D!" });
+      } catch (fcmErr) {
+        console.error("Test push (legacy FCM) failed:", fcmErr?.message);
+        return res.status(500).json({ error: fcmErr?.message || "\u0641\u0634\u0644 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A." });
       }
-      res.status(500).json({ error: err?.message || "\u0641\u0634\u0644 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A \u0639\u0628\u0631 FCM" });
+    } catch (err) {
+      console.error("Test push failed:", err);
+      res.status(500).json({ error: err?.message || "\u0641\u0634\u0644 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A." });
     }
   });
   app.post("/api/daily-notification/trigger", async (req, res) => {
@@ -4299,35 +4329,25 @@ ${searchContext}
       }
       let sentCount = 0;
       let failureCount = 0;
-      if (allTokens.length > 0) {
-        const messaging = getMessaging();
-        const payload = {
-          tokens: allTokens,
-          notification: {
-            title,
-            body,
-            ...imageUrl ? { imageUrl } : {}
-          },
-          data: {
-            notificationId: "broadcast_" + Date.now(),
-            category: topic || "General",
-            deepLink: linkUrl || "/"
-          },
-          webpush: {
-            notification: {
-              title,
-              body,
-              icon: "/favicon.ico",
-              ...imageUrl ? { image: imageUrl } : {}
-            },
-            fcmOptions: {
-              link: linkUrl || "/"
-            }
-          }
-        };
-        const batchResponse = await messaging.sendEachForMulticast(payload);
-        sentCount = batchResponse.successCount;
-        failureCount = batchResponse.failureCount;
+      const broadcastPayload = buildWebPushPayload({
+        title,
+        body,
+        deepLink: linkUrl || "/",
+        notificationId: "broadcast_" + Date.now(),
+        category: topic || "General",
+        icon: imageUrl || void 0
+      });
+      for (const tokenValue of allTokens) {
+        if (!tokenValue || !tokenValue.trimStart().startsWith("{")) {
+          failureCount++;
+          continue;
+        }
+        const result = await sendWebPushToSubscription(tokenValue, broadcastPayload);
+        if (result === "ok") {
+          sentCount++;
+        } else {
+          failureCount++;
+        }
       }
       const broadcastLogRef = doc2(collection2(dbWeb, "broadcastLogs"));
       await setDoc2(broadcastLogRef, {
@@ -8615,7 +8635,7 @@ ${searchContext}
         const selectedVoice = reqUrl.searchParams.get("voice") || "Puck";
         const validVoices = ["Aoede", "Charon", "Fenrir", "Kore", "Puck", "Zephyr"];
         const finalVoiceName = validVoices.includes(selectedVoice) ? selectedVoice : "Puck";
-        const targetModel = reqUrl.searchParams.get("model") || "gemini-3.1-flash-live-preview";
+        const targetModel = reqUrl.searchParams.get("model") || "gemini-2.5-flash-native-audio-latest";
         console.log("[GEMINI LIVE] Connecting to model:", targetModel, "Voice:", finalVoiceName);
         session = await ai.live.connect({
           model: targetModel,
