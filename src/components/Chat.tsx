@@ -699,9 +699,14 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     };
 
     const handleActiveSessionChanged = (e: any) => {
-      if (e.detail?.sessionId) {
-        switchSession(e.detail.sessionId, true);
-      }
+      const sid = e.detail?.sessionId;
+      if (!sid) return;
+      // Echo guard: switchSession itself re-dispatches this event after updating
+      // the active id. Re-entering on our own echo caused an infinite
+      // switchSession loop ("Maximum call stack size exceeded") which aborted
+      // whatever was running — including the live-voice mic pipeline.
+      if (sid === sessionIdRef.current) return;
+      switchSession(sid, true);
     };
 
     const handleOpenDrawerEvent = () => {

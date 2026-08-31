@@ -5,6 +5,7 @@ import {
 import { useLanguage } from '../lib/LanguageContext';
 import { getDeviceId } from '../lib/otpService';
 import { liveWsUrl } from '../services/wsUrl';
+import { LiveCallEngine } from '../services/liveCallEngine';
 
 export interface VoiceOption {
   id: string;
@@ -56,173 +57,24 @@ export function VoiceDialog({
     return GEMINI_MODEL_VOICES.find(v => v.id === saved) || GEMINI_MODEL_VOICES[0];
   });
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const outputGainRef = useRef<GainNode | null>(null);
-  const inputAudioCtxRef = useRef<AudioContext | null>(null);
-  // Session generation: every restart bumps it; async callbacks from an older
-  // generation are dropped so audio from a closed call can never play again.
-  const sessionGenRef = useRef<number>(0);
-
-  // Echo protection: mic gating timestamps (ms) — prevents the model from hearing its own voice
-  const micOpenTimeRef = useRef<number>(0);
-  const lastPlaybackEndRef = useRef<number>(0);
-
-  const outputAudioCtxRef = useRef<AudioContext | null>(null);
-  const nextPlayTimeRef = useRef<number>(0);
-  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // Call engine: owns the WebSocket transport, mic capture (AudioWorklet at
+  // 16kHz, official Gemini Live web-sample architecture), jitter-buffered
+  // click-free playback, and full generation-guarded teardown.
+  const engineRef = useRef<LiveCallEngine | null>(null);
 
   const isSessionActiveRef = useRef<boolean>(false);
   const isMutedRef = useRef<boolean>(false);
   const guestTimerRef = useRef<any>(null);
   const sessionAccumulatedSecRef = useRef<number>(0);
 
-  // Initialize or unlock Output AudioContext
-  const ensureOutputCtx = async () => {
-    if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === 'closed') {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      outputAudioCtxRef.current = new AudioCtx();
-      // Master gain allows smooth fade in/out of playback (no hard-stop clicks)
-      const master = outputAudioCtxRef.current.createGain();
-      master.gain.value = 1;
-      master.connect(outputAudioCtxRef.current.destination);
-      outputGainRef.current = master;
-      // Silent unlock: open the audio device ONCE, here, while the user gesture
-      // is still active — instead of letting it wake up later mid-session with
-      // an audible pop. Pure digital silence, so nothing is actually heard.
-      try {
-        const unlock = outputAudioCtxRef.current.createBuffer(1, 2048, outputAudioCtxRef.current.sampleRate);
-        const src = outputAudioCtxRef.current.createBufferSource();
-        src.buffer = unlock;
-        src.connect(master);
-        src.start();
-      } catch (e) {}
-    }
-    if (outputAudioCtxRef.current.state === 'suspended') {
-      try {
-        await outputAudioCtxRef.current.resume();
-        // Ensure a previously faded/suspended master gain never stays muted
-        try {
-          const g = outputGainRef.current?.gain;
-          if (g) { g.cancelScheduledValues(outputAudioCtxRef.current.currentTime); g.setValueAtTime(1, outputAudioCtxRef.current.currentTime); }
-        } catch (e) {}
-        setNeedUserGesture(false);
-      } catch (e) {
-        setNeedUserGesture(true);
-      }
-    } else {
-      setNeedUserGesture(false);
-    }
-    return outputAudioCtxRef.current;
-  };
-
-  const clearAudioQueue = () => {
-    const ctx = outputAudioCtxRef.current;
-    const master = outputGainRef.current;
-    const sources = activeSourcesRef.current;
-    activeSourcesRef.current = [];
-    lastPlaybackEndRef.current = performance.now();
-
-    if (ctx && master && sources.length > 0 && ctx.state !== 'closed') {
-      // Fade out over ~12ms before stopping so interrupting never produces a click
-      const now = ctx.currentTime;
-      try {
-        master.gain.cancelScheduledValues(now);
-        master.gain.setValueAtTime(master.gain.value, now);
-        master.gain.linearRampToValueAtTime(0.0001, now + 0.012);
-      } catch (e) {}
-      setTimeout(() => {
-        sources.forEach(source => {
-          try { source.stop(); } catch (e) {}
-        });
-        try {
-          if (ctx.state !== 'closed') {
-            const t = ctx.currentTime;
-            master.gain.cancelScheduledValues(t);
-            master.gain.setValueAtTime(1, t);
-          }
-        } catch (e) {}
-      }, 20);
-    } else {
-      sources.forEach(source => {
-        try { source.stop(); } catch (e) {}
-      });
-    }
-
-    if (ctx && ctx.state !== 'closed') {
-      nextPlayTimeRef.current = ctx.currentTime;
-    }
-  };
-
-  const playAudioChunk = async (base64AudioChunk: string, gen: number) => {
-    if (!base64AudioChunk) return;
-    const ctx = await ensureOutputCtx();
-    // Drop late chunks from a closed/restarted call (WS close() does not discard
-    // already-received undelivered messages — this guard is what stops audio
-    // from continuing to play after the user hangs up)
-    if (!ctx || !isSessionActiveRef.current || gen !== sessionGenRef.current) return;
-
-    try {
-      const binary = atob(base64AudioChunk);
-      const len = binary.length;
-      if (len < 2) return;
-
-      const buffer = new ArrayBuffer(len);
-      const view = new Uint8Array(buffer);
-      for (let i = 0; i < len; i++) view[i] = binary.charCodeAt(i);
-
-      const int16View = new Int16Array(buffer, 0, Math.floor(buffer.byteLength / 2));
-      if (int16View.length === 0) return;
-
-      const float32Data = new Float32Array(int16View.length);
-      for (let i = 0; i < int16View.length; i++) {
-        float32Data[i] = int16View[i] / 32768.0;
-      }
-
-      const currentTime = ctx.currentTime;
-      // If queue is empty or lagged behind, sync playback time to current time + 20ms
-      if (activeSourcesRef.current.length === 0 || nextPlayTimeRef.current < currentTime) {
-        nextPlayTimeRef.current = currentTime + 0.02;
-        // Speech onset click guard: tiny 5ms fade-in on the first samples of a fresh burst
-        const fadeLen = Math.min(120, float32Data.length);
-        for (let i = 0; i < fadeLen; i++) {
-          float32Data[i] *= i / fadeLen;
-        }
-      }
-
-      // Gemini output rate is 24000Hz PCM
-      const audioBuffer = ctx.createBuffer(1, float32Data.length, 24000);
-      audioBuffer.getChannelData(0).set(float32Data);
-
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(outputGainRef.current || ctx.destination);
-
-      const startTime = nextPlayTimeRef.current;
-      source.start(startTime);
-      setVoiceState('speaking');
-
-      source.onended = () => {
-        lastPlaybackEndRef.current = performance.now();
-        activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
-        if (activeSourcesRef.current.length === 0) {
-          setVoiceState('listening');
-        }
-      };
-
-      activeSourcesRef.current.push(source);
-      nextPlayTimeRef.current = startTime + audioBuffer.duration;
-    } catch (err) {
-      console.error("Playback error:", err);
-    }
-  };
-
   const stopSession = () => {
     isSessionActiveRef.current = false;
-    sessionGenRef.current++;
-    clearAudioQueue();
-
+    // Engine.stop() sends {type:'stop'}, closes the socket, tears down the mic
+    // and playback graphs, and suspends the output context — silence is
+    // guaranteed the moment the call ends.
+    if (engineRef.current) {
+      try { engineRef.current.stop(true); } catch (e) {}
+    }
     if (recognitionRef.current) {
       const rec = recognitionRef.current;
       recognitionRef.current = null;
@@ -234,47 +86,146 @@ export function VoiceDialog({
         rec.stop();
       } catch (e) {}
     }
-    if (scriptProcessorRef.current) {
-      try {
-        scriptProcessorRef.current.onaudioprocess = null;
-        scriptProcessorRef.current.disconnect();
-      } catch (e) {}
-      scriptProcessorRef.current = null;
-    }
-    if (mediaStreamRef.current) {
-      try {
-        mediaStreamRef.current.getTracks().forEach(t => {
-          t.enabled = false;
-          t.stop();
-        });
-      } catch (e) {}
-      mediaStreamRef.current = null;
-    }
-    // Tear down the 16kHz capture context entirely
-    if (inputAudioCtxRef.current) {
-      try {
-        inputAudioCtxRef.current.close().catch(() => {});
-      } catch (e) {}
-      inputAudioCtxRef.current = null;
-    }
-    // Suspend the output context: freezes all scheduled/in-flight audio instantly,
-    // guaranteeing silence the moment the call ends (belt-and-braces on top of
-    // the generation guards)
-    if (outputAudioCtxRef.current && outputAudioCtxRef.current.state === 'running') {
-      try { outputAudioCtxRef.current.suspend().catch(() => {}); } catch (e) {}
-    }
-    micOpenTimeRef.current = 0;
-    lastPlaybackEndRef.current = 0;
-    if (wsRef.current) {
-      try {
-        if (wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'stop' }));
-        }
-        wsRef.current.close();
-      } catch (e) {}
-      wsRef.current = null;
-    }
     setVoiceState('initial');
+  };
+
+  // Local speech recognition for live transcript (browser Web Speech API)
+  const startTranscription = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition && !recognitionRef.current && isSessionActiveRef.current) {
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'ar-EG';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onresult = (event: any) => {
+          if (!isSessionActiveRef.current) return;
+          let finalTranscript = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              finalTranscript += event.results[i][0].transcript + ' ';
+            }
+          }
+          if (finalTranscript.trim()) {
+            setTranscripts(prev => [...prev, { role: 'user', text: finalTranscript.trim() }]);
+          }
+        };
+        recognition.onerror = () => {};
+        recognition.onend = () => {
+          if (isSessionActiveRef.current && recognitionRef.current === recognition) {
+            try { recognition.start(); } catch (e) {}
+          }
+        };
+        recognition.start();
+        recognitionRef.current = recognition;
+      } catch (e) {
+        console.warn("SpeechRecognition start error:", e);
+      }
+    }
+  };
+
+  // Friendly microphone error messages (moved verbatim from the old capture code)
+  const micErrorMessage = (err: any): string => {
+    let friendlyError = isAr
+      ? "يرجى السماح بالوصول للميكروفون من إعدادات المتصفح للبدء بالمحادثة الصوتية."
+      : "Please allow microphone access in browser settings to start live voice chat.";
+    const errMsg = String(err?.message || err?.name || '');
+    if (err?.name === 'NotAllowedError' || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotAllowedError')) {
+      friendlyError = isAr
+        ? "تم حظر إذن الميكروفون من قِبل النظام أو المتصفح. يرجى تفعيل إذن الميكروفون (رمز 🔒 أو الكاميرا/الميكروفون في شريط العنوان) ثم الضغط على إعادة المحاولة."
+        : "Microphone access was denied by system or browser. Please enable microphone permission in the address bar (🔒 icon) and click Retry.";
+    } else if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError' || errMsg.includes('NotFoundError')) {
+      friendlyError = isAr
+        ? "لم يتم العثور على ميكروفون متصل بجهازك. يرجى توصيل ميكروفون والمحاولة ثانية."
+        : "No microphone detected on your device. Please connect a microphone and try again.";
+    }
+    return friendlyError;
+  };
+
+  // Create the engine once, with all protocol routing (same WS protocol and
+  // guest/limits handling as before — nothing server-side changed).
+  const getEngine = (): LiveCallEngine => {
+    if (!engineRef.current) {
+      engineRef.current = new LiveCallEngine({
+        onMessage: (msg) => handleEngineMessage(msg),
+        onState: (state, error) => {
+          if (state === 'error' && isSessionActiveRef.current) {
+            setErrorMessage(error || (isAr ? 'حدث خطأ في الاتصال الصوتي' : 'Voice connection error'));
+            stopSession();
+            setVoiceState('error');
+          }
+        },
+        onPlaybackEnded: () => {
+          if (isSessionActiveRef.current) {
+            setVoiceState('listening');
+          }
+        }
+      });
+      // Debug surface for support/diagnostics (no UI impact)
+      (window as any).__thothLive = engineRef.current.stats;
+    }
+    return engineRef.current;
+  };
+
+  const handleEngineMessage = (msg: any) => {
+    if (!isSessionActiveRef.current) return;
+
+    if (msg.type === 'guest_status') {
+      setIsGuest(true);
+      setGuestLimitSeconds(msg.limitSeconds || 180);
+      setGuestRemainingSeconds(msg.remainingSeconds ?? 180);
+      if (msg.remainingSeconds <= 0) {
+        setIsLimitReached(true);
+        setShowLimitModal(true);
+        stopSession();
+      }
+    } else if (msg.type === 'guest_limit_reached') {
+      setIsGuest(true);
+      setIsLimitReached(true);
+      setShowLimitModal(true);
+      stopSession();
+    } else if (msg.type === 'ready' || msg.type === 'live_ready') {
+      // Idempotent: the server may send this more than once
+      if (!isSessionActiveRef.current) return;
+      setVoiceState('listening');
+      const engine = engineRef.current;
+      if (engine) {
+        engine.startCapture()
+          .then(() => { if (isSessionActiveRef.current) startTranscription(); })
+          .catch((err: any) => {
+            console.warn("Microphone access notice:", err?.name || err?.message || err);
+            setErrorMessage(micErrorMessage(err));
+            stopSession();
+            setVoiceState('error');
+          });
+      }
+    } else if (msg.type === 'interrupted') {
+      engineRef.current?.stopPlayback();
+      setVoiceState('listening');
+    } else if (msg.type === 'audio' && msg.audio) {
+      engineRef.current?.playPcm(msg.audio, msg.mimeType);
+      setVoiceState('speaking');
+    } else if (msg.type === 'text' && msg.text) {
+      setTranscripts(prev => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === 'model') {
+          const newArr = [...prev];
+          newArr[newArr.length - 1].text += msg.text;
+          return newArr;
+        } else {
+          return [...prev, { role: 'model', text: msg.text }];
+        }
+      });
+    } else if (msg.type === 'error') {
+      setErrorMessage(msg.message || "حدث خطأ أثناء الاتصال الصوتي");
+      stopSession();
+      setVoiceState('error');
+    } else if (msg.type === 'ws_closed') {
+      if (isSessionActiveRef.current) {
+        stopSession();
+      }
+    }
   };
 
   useEffect(() => {
@@ -331,256 +282,25 @@ export function VoiceDialog({
     setErrorMessage(null);
     stopSession();
     isSessionActiveRef.current = true;
-    // New generation for this call: all handlers below capture it, and any
-    // in-flight callback from the previous call is dropped automatically
-    const gen = ++sessionGenRef.current;
-    await ensureOutputCtx();
-    if (gen !== sessionGenRef.current) return;
     setVoiceState('connecting');
 
     try {
       const userId = localStorage.getItem('app-user-id') || localStorage.getItem('thoth_user_id') || '';
       const deviceId = getDeviceId();
       const wsUrl = liveWsUrl(`/api/live-audio?voice=${encodeURIComponent(voiceId)}&userId=${encodeURIComponent(userId)}&deviceId=${encodeURIComponent(deviceId)}`);
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        console.log(`[LIVE AUDIO] WS connected for voice: ${voiceId}`);
-      };
-
-      ws.onmessage = async (event) => {
-        if (gen !== sessionGenRef.current) return;
-        try {
-          const msg = JSON.parse(event.data);
-
-          if (msg.type === 'guest_status') {
-            setIsGuest(true);
-            setGuestLimitSeconds(msg.limitSeconds || 180);
-            setGuestRemainingSeconds(msg.remainingSeconds ?? 180);
-            if (msg.remainingSeconds <= 0) {
-              setIsLimitReached(true);
-              setShowLimitModal(true);
-              stopSession();
-            }
-          } else if (msg.type === 'guest_limit_reached') {
-            setIsGuest(true);
-            setIsLimitReached(true);
-            setShowLimitModal(true);
-            stopSession();
-          } else if (msg.type === 'ready' || msg.type === 'live_ready') {
-            if (!isSessionActiveRef.current || gen !== sessionGenRef.current) return;
-            setVoiceState('listening');
-            await startMicrophone(gen);
-
-            if (!isSessionActiveRef.current || gen !== sessionGenRef.current) return;
-
-            // Local Speech Recognition for transcript
-            const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-            if (SpeechRecognition && !recognitionRef.current && isSessionActiveRef.current) {
-              try {
-                const recognition = new SpeechRecognition();
-                recognition.lang = 'ar-EG';
-                recognition.continuous = true;
-                recognition.interimResults = true;
-                
-                recognition.onresult = (event: any) => {
-                  if (!isSessionActiveRef.current) return;
-                  let finalTranscript = '';
-                  for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                      finalTranscript += event.results[i][0].transcript + ' ';
-                    }
-                  }
-                  if (finalTranscript.trim()) {
-                    setTranscripts(prev => [...prev, { role: 'user', text: finalTranscript.trim() }]);
-                  }
-                };
-                recognition.onerror = () => {};
-                recognition.onend = () => {
-                  if (isSessionActiveRef.current && recognitionRef.current === recognition) {
-                    try { recognition.start(); } catch (e) {}
-                  }
-                };
-                recognition.start();
-                recognitionRef.current = recognition;
-              } catch (e) {
-                console.warn("SpeechRecognition start error:", e);
-              }
-            }
-
-          } else if (msg.type === 'interrupted') {
-            clearAudioQueue();
-            setVoiceState('listening');
-          } else if (msg.type === 'audio' && msg.audio) {
-            playAudioChunk(msg.audio, gen);
-          } else if (msg.type === 'text' && msg.text) {
-            setTranscripts(prev => {
-              const last = prev[prev.length - 1];
-              if (last && last.role === 'model') {
-                const newArr = [...prev];
-                newArr[newArr.length - 1].text += msg.text;
-                return newArr;
-              } else {
-                return [...prev, { role: 'model', text: msg.text }];
-              }
-            });
-          } else if (msg.type === 'error') {
-            setErrorMessage(msg.message || "حدث خطأ أثناء الاتصال الصوتي");
-            stopSession();
-            setVoiceState('error');
-          }
-        } catch (err) {
-          console.error("WS message parse error", err);
-        }
-      };
-
-      ws.onerror = () => {
-        setErrorMessage("تعذر الاتصال بالخادم الصوتي المباشر");
-        stopSession();
-        setVoiceState('error');
-      };
-    } catch (err) {
-      setErrorMessage("خطأ في بدء الجلسة الصوتية");
-      setVoiceState('error');
-    }
-  };
-
-  const startMicrophone = async (gen: number) => {
-    if (!isSessionActiveRef.current || gen !== sessionGenRef.current) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        }
-      });
-
-      if (!isSessionActiveRef.current || gen !== sessionGenRef.current) {
-        stream.getTracks().forEach(t => {
-          t.enabled = false;
-          t.stop();
-        });
-        return;
-      }
-
-      mediaStreamRef.current = stream;
-
-      // Dedicated 16kHz capture context (the architecture used by the official
-      // Gemini Live web sample): Chrome resamples the mic natively, no aliasing,
-      // and the capture graph stays fully isolated from the playback graph.
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioCtx({ sampleRate: 16000 });
-      if (audioCtx.state === 'suspended') {
-        try { await audioCtx.resume(); } catch (e) {}
-      }
-      inputAudioCtxRef.current = audioCtx;
-      // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
-      micOpenTimeRef.current = performance.now();
-
-      if (!isSessionActiveRef.current || gen !== sessionGenRef.current) {
-        stream.getTracks().forEach(t => {
-          t.enabled = false;
-          t.stop();
-        });
-        mediaStreamRef.current = null;
-        try { audioCtx.close(); } catch (e) {}
-        inputAudioCtxRef.current = null;
-        return;
-      }
-
-      const source = audioCtx.createMediaStreamSource(stream);
-      // Reduce buffer size to 2048 for lower latency (safe from rate limits)
-      const processor = audioCtx.createScriptProcessor(2048, 1, 1);
-      scriptProcessorRef.current = processor;
-      
-      source.connect(processor);
-      
-      // Connect to a dummy gain node (muted) to keep the audio graph active in some browsers
-      const dummyGain = audioCtx.createGain();
-      dummyGain.gain.value = 0;
-      processor.connect(dummyGain);
-      dummyGain.connect(audioCtx.destination);
-
-      processor.onaudioprocess = (e) => {
-        if (!isSessionActiveRef.current || gen !== sessionGenRef.current) return;
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-        if (isMutedRef.current) return;
-
-        const nowMs = performance.now();
-
-        // Drop the mic-open pop / "recording start" artifact so the model never hears it
-        if (nowMs - micOpenTimeRef.current < 600) return;
-
-        // Half-duplex guard: never feed the model its own voice echo while the assistant speaks
-        if (activeSourcesRef.current.length > 0) {
-          // Deadlock-proofing: if the scheduled queue already finished playing a
-          // while ago but an onended handler was lost, unblock the mic
-          const outCtx = outputAudioCtxRef.current;
-          const queueDone = !outCtx || outCtx.state === 'closed' || nextPlayTimeRef.current < outCtx.currentTime - 0.25;
-          if (queueDone) {
-            activeSourcesRef.current.forEach(s => { try { s.onended = null; s.stop(); } catch (e) {} });
-            activeSourcesRef.current = [];
-          } else {
-            lastPlaybackEndRef.current = nowMs;
-            return;
-          }
-        }
-        // Short tail after playback ends so speaker echo/reverb decays before mic reopens
-        if (nowMs - lastPlaybackEndRef.current < 300) return;
-
-        const inputData = e.inputBuffer.getChannelData(0);
-
-        // Gentle noise gate: skip near-silence so background hum/noise never confuses the model
-        let gateSum = 0;
-        for (let i = 0; i < inputData.length; i++) gateSum += inputData[i] * inputData[i];
-        if (Math.sqrt(gateSum / inputData.length) < 0.004) return;
-
-        // Capture context runs at exactly 16kHz — no manual downsampling needed
-        const pcm16 = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          let s = Math.max(-1, Math.min(1, inputData[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-
-        // Convert to Base64
-        const bytes = new Uint8Array(pcm16.buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.byteLength; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const base64Chunk = btoa(binary);
-
-        wsRef.current.send(JSON.stringify({
-          type: 'audio',
-          audio: base64Chunk,
-          mimeType: 'audio/pcm;rate=16000'
-        }));
-      };
-
+      const engine = getEngine();
+      engine.setMuted(isMutedRef.current);
+      await engine.connect(wsUrl);
+      // The engine's onMessage router handles live_ready -> startCapture()
     } catch (err: any) {
-      console.warn("Microphone access notice:", err?.name || err?.message || err);
-      let friendlyError = isAr 
-        ? "يرجى السماح بالوصول للميكروفون من إعدادات المتصفح للبدء بالمحادثة الصوتية." 
-        : "Please allow microphone access in browser settings to start live voice chat.";
-      
-      const errMsg = String(err?.message || err?.name || '');
-      if (err?.name === 'NotAllowedError' || errMsg.includes('Permission') || errMsg.includes('denied')) {
-        friendlyError = isAr 
-          ? "تم حظر إذن الميكروفون من قِبل النظام أو المتصفح. يرجى تفعيل إذن الميكروفون (رمز 🔒 أو الكاميرا/الميكروفون في شريط العنوان) ثم الضغط على إعادة المحاولة."
-          : "Microphone access was denied by system or browser. Please enable microphone permission in the address bar (🔒 icon) and click Retry.";
-      } else if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
-        friendlyError = isAr 
-          ? "لم يتم العثور على ميكروفون متصل بجهازك. يرجى توصيل ميكروفون والمحاولة ثانية."
-          : "No microphone detected on your device. Please connect a microphone and try again.";
-      }
-      setErrorMessage(friendlyError);
+      console.warn("Voice session start error:", err?.message || err?.name || err);
+      setErrorMessage(isAr ? "تعذر الاتصال بالخادم الصوتي المباشر" : "Could not reach the live voice server");
       stopSession();
       setVoiceState('error');
     }
   };
+
+
 
   
   const handleClose = () => {
@@ -592,10 +312,11 @@ export function VoiceDialog({
   const toggleMute = () => {
     isMutedRef.current = !isMutedRef.current;
     setIsMuted(isMutedRef.current);
+    try { engineRef.current?.setMuted(isMutedRef.current); } catch (e) {}
   };
 
   const handleOrbClick = async () => {
-    await ensureOutputCtx();
+    getEngine();
     if (voiceState === 'initial' || voiceState === 'error') {
       startConversation();
     } else {

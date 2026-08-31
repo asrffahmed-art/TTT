@@ -88,6 +88,20 @@ export function Settings({ onClose, onLogout, onOpenSubscription, onOpenAdminPan
     if (currentUser) {
       await saveUserNotificationSettings(currentUser.uid, { dailyEnabled: enabled });
       showToast(enabled ? 'تم تفعيل استقبال الإشعارات اليومية' : 'تم تعطيل الإشعارات اليومية');
+      // Ask for the browser notification permission the moment the user turns
+      // notifications ON (this is a real user gesture, so the browser will
+      // actually show the prompt) — then register the FCM token.
+      if (enabled && 'Notification' in window && Notification.permission === 'default') {
+        const result = await requestNotificationPermission(currentUser.uid);
+        if (result.success && result.token) {
+          setFcmToken(result.token);
+          setNotificationPermission('granted');
+          showToast('تم تفعيل إذن الإشعارات وتحديث الـ Token بنجاح!');
+        } else {
+          setNotificationPermission('denied');
+          showToast(result.error || 'لم يتم منح إذن الإشعارات.');
+        }
+      }
     }
   };
 

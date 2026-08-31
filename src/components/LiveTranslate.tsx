@@ -4,6 +4,7 @@ import { auth } from '../lib/firebase';
 import { useAppTheme } from '../lib/themeService';
 import { useLanguage } from '../lib/LanguageContext';
 import { liveWsUrl } from '../services/wsUrl';
+import { LiveCallEngine } from '../services/liveCallEngine';
 
 interface LiveTranslateProps {
   onSendToChat?: (text: string) => void;
@@ -75,20 +76,10 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
   const [isLiveActive, setIsLiveActive] = useState(false);
   const [liveStatusText, setLiveStatusText] = useState('');
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const outputAudioCtxRef = useRef<AudioContext | null>(null);
-  const outputGainRef = useRef<GainNode | null>(null);
-  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const inputAudioCtxRef = useRef<AudioContext | null>(null);
-  const nextPlayTimeRef = useRef<number>(0);
-  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  // Session generation: bumped on every stop; async callbacks from an older
-  // generation are dropped so audio can never continue after the session ends
-  const sessionGenRef = useRef<number>(0);
-  // Echo protection: mic gating timestamps (ms) — prevents the translator from hearing its own output
-  const micOpenTimeRef = useRef<number>(0);
-  const lastPlaybackEndRef = useRef<number>(0);
+  // Call engine: transport + AudioWorklet capture + jitter-buffered playback,
+  // generation-guarded teardown (shared with the whole platform)
+  const engineRef = useRef<LiveCallEngine | null>(null);
+  const sessionActiveRef = useRef<boolean>(false);
 
   // Dialect modal state
   const [isDialectModalOpen, setIsDialectModalOpen] = useState(false);
@@ -262,165 +253,65 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Helper functions
-  const ensureOutputCtx = async (): Promise<AudioContext> => {
-    if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === 'closed') {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      outputAudioCtxRef.current = new AudioCtx();
-      // Master gain allows smooth fade in/out of playback (no hard-stop clicks)
-      const master = outputAudioCtxRef.current.createGain();
-      master.gain.value = 1;
-      master.connect(outputAudioCtxRef.current.destination);
-      outputGainRef.current = master;
-      // Silent unlock: open the audio device ONCE here instead of letting it
-      // wake up later mid-session with an audible pop (pure digital silence)
-      try {
-        const unlock = outputAudioCtxRef.current.createBuffer(1, 2048, outputAudioCtxRef.current.sampleRate);
-        const src = outputAudioCtxRef.current.createBufferSource();
-        src.buffer = unlock;
-        src.connect(master);
-        src.start();
-      } catch (e) {}
-    }
-    if (outputAudioCtxRef.current.state === 'suspended') {
-      await outputAudioCtxRef.current.resume();
-      // Ensure a previously faded/suspended master gain never stays muted
-      try {
-        const g = outputGainRef.current?.gain;
-        if (g) { g.cancelScheduledValues(outputAudioCtxRef.current.currentTime); g.setValueAtTime(1, outputAudioCtxRef.current.currentTime); }
-      } catch (e) {}
-    }
-    return outputAudioCtxRef.current;
-  };
-
-  const playAudioChunk = async (base64Data: string, gen: number) => {
-    if (gen !== sessionGenRef.current) return;
-    try {
-      const ctx = await ensureOutputCtx();
-      // Drop late chunks from a closed/restarted session — this is what stops
-      // audio from continuing after the user ends the live session
-      if (gen !== sessionGenRef.current) return;
-      const binary = atob(base64Data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      const pcm16 = new Int16Array(bytes.buffer, 0, Math.floor(bytes.byteLength / 2));
-      if (pcm16.length === 0) return;
-      const float32 = new Float32Array(pcm16.length);
-      for (let i = 0; i < pcm16.length; i++) {
-        float32[i] = pcm16[i] / (pcm16[i] < 0 ? 0x8000 : 0x7FFF);
-      }
-
-      const sampleRate = 24000;
-      const currentTime = ctx.currentTime;
-      if (activeSourcesRef.current.length === 0 || nextPlayTimeRef.current < currentTime) {
-        nextPlayTimeRef.current = currentTime;
-        // Speech onset click guard: tiny 5ms fade-in on the first samples of a fresh burst
-        const fadeLen = Math.min(120, float32.length);
-        for (let i = 0; i < fadeLen; i++) {
-          float32[i] *= i / fadeLen;
-        }
-      }
-
-      const audioBuffer = ctx.createBuffer(1, float32.length, sampleRate);
-      audioBuffer.copyToChannel(float32, 0);
-
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(outputGainRef.current || ctx.destination);
-
-      source.start(nextPlayTimeRef.current);
-      nextPlayTimeRef.current += audioBuffer.duration;
-
-      activeSourcesRef.current.push(source);
-      source.onended = () => {
-        lastPlaybackEndRef.current = performance.now();
-        activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
-      };
-    } catch (e) {
-      console.warn("Audio playback chunk notice:", e);
-    }
-  };
-
-  // Fade out and stop any queued playback without producing a hard-stop click
-  const clearOutputPlayback = () => {
-    const ctx = outputAudioCtxRef.current;
-    const master = outputGainRef.current;
-    const sources = activeSourcesRef.current;
-    activeSourcesRef.current = [];
-    lastPlaybackEndRef.current = performance.now();
-
-    if (ctx && master && sources.length > 0 && ctx.state !== 'closed') {
-      const now = ctx.currentTime;
-      try {
-        master.gain.cancelScheduledValues(now);
-        master.gain.setValueAtTime(master.gain.value, now);
-        master.gain.linearRampToValueAtTime(0.0001, now + 0.012);
-      } catch (e) {}
-      setTimeout(() => {
-        sources.forEach(source => {
-          try { source.stop(); } catch (e) {}
-        });
-        try {
-          if (ctx.state !== 'closed') {
-            const t = ctx.currentTime;
-            master.gain.cancelScheduledValues(t);
-            master.gain.setValueAtTime(1, t);
-          }
-        } catch (e) {}
-      }, 20);
-    } else {
-      sources.forEach(source => {
-        try { source.stop(); } catch (e) {}
-      });
-    }
-
-    if (ctx && ctx.state !== 'closed') {
-      nextPlayTimeRef.current = ctx.currentTime;
-    }
-  };
-
   const stopLiveSession = () => {
-    sessionGenRef.current++;
+    sessionActiveRef.current = false;
     setIsRecording(false);
     setIsLiveActive(false);
     setLiveStatusText('');
-    clearOutputPlayback();
-
-    if (scriptProcessorRef.current) {
-      try { scriptProcessorRef.current.onaudioprocess = null; } catch(e) {}
-      try { scriptProcessorRef.current.disconnect(); } catch(e) {}
-      scriptProcessorRef.current = null;
-    }
-    if (mediaStreamRef.current) {
-      try { mediaStreamRef.current.getTracks().forEach(t => t.stop()); } catch(e) {}
-      mediaStreamRef.current = null;
-    }
-    // Tear down the 16kHz capture context entirely
-    if (inputAudioCtxRef.current) {
-      try { inputAudioCtxRef.current.close().catch(() => {}); } catch(e) {}
-      inputAudioCtxRef.current = null;
-    }
-    // Suspend the output context: freezes all scheduled/in-flight audio instantly,
-    // guaranteeing silence the moment the session ends
-    if (outputAudioCtxRef.current && outputAudioCtxRef.current.state === 'running') {
-      try { outputAudioCtxRef.current.suspend().catch(() => {}); } catch(e) {}
-    }
-    micOpenTimeRef.current = 0;
-    lastPlaybackEndRef.current = 0;
-    if (wsRef.current) {
-      try {
-        if (wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'stop' }));
-        }
-        wsRef.current.close();
-      } catch(e) {}
-      wsRef.current = null;
+    // Engine.stop() sends {type:'stop'}, closes the socket, tears down the mic
+    // and playback graphs, and suspends the output context — guaranteed
+    // instant silence when the session ends.
+    if (engineRef.current) {
+      try { engineRef.current.stop(true); } catch (e) {}
     }
   };
 
-  // Mic recording for Speech-to-Speech Real-time Translation via Gemini 3.5 Live Translate (Live API)
+  const ensureEngine = (): LiveCallEngine => {
+    if (!engineRef.current) {
+      engineRef.current = new LiveCallEngine({
+        onMessage: (msg) => handleLiveMessage(msg),
+        onState: (state, error) => {
+          if (state === 'error' && sessionActiveRef.current) {
+            console.error('Live translation transport error:', error);
+            stopLiveSession();
+          }
+        },
+        onPlaybackEnded: () => {}
+      });
+      (window as any).__thothLiveTranslate = engineRef.current.stats;
+    }
+    return engineRef.current;
+  };
+
+  const handleLiveMessage = (msg: any) => {
+    if (!sessionActiveRef.current) return;
+    if (msg.type === 'live_ready') {
+      setIsLiveActive(true);
+      setLiveStatusText(isAr ? 'تحدث الآن، الترجمة الحية نشطة...' : 'Speak now, live translation active...');
+      engineRef.current?.startCapture().catch((err) => {
+        console.warn('Microphone access error in Live Translate:', err);
+        stopLiveSession();
+      });
+    } else if (msg.type === 'translated_text' && msg.text) {
+      setTranslatedText(prev => prev ? prev + ' ' + msg.text : msg.text);
+    } else if (msg.type === 'interrupted') {
+      // Model detected an interruption: fade out queued playback smoothly
+      engineRef.current?.stopPlayback();
+    } else if (msg.type === 'audio' && msg.audio) {
+      engineRef.current?.playPcm(msg.audio, msg.mimeType);
+    } else if (msg.type === 'guest_limit_reached') {
+      setTranslatedText(msg.message || (isAr ? 'انتهت مدة الاستخدام اليومية للترجمة الصوتية الحية.' : 'Daily live voice limit reached.'));
+      stopLiveSession();
+    } else if (msg.type === 'error') {
+      console.error('Live translation error message:', msg.message);
+      stopLiveSession();
+    } else if (msg.type === 'ws_closed') {
+      setIsLiveActive(false);
+      setIsRecording(false);
+    }
+  };
+
+  // Mic recording for Speech-to-Speech Real-time Translation via Gemini Live (Live API)
   const handleVoiceInput = async () => {
     if (isRecording) {
       stopLiveSession();
@@ -429,165 +320,24 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
 
     try {
       setIsRecording(true);
-      setLiveStatusText(isAr ? 'جاري الاتصال بـ Gemini 3.5 Live Translate...' : 'Connecting to Gemini 3.5 Live Translate...');
+      setLiveStatusText(isAr ? 'جاري الاتصال بـ Gemini Live Translate...' : 'Connecting to Gemini Live Translate...');
 
       const targetLang = targetLangId === 'ar' ? (targetDialectId || 'ar_msa') : targetLangId;
       const currentUser = auth.currentUser;
       const userId = currentUser ? currentUser.uid : '';
       const wsUrl = liveWsUrl(`/api/live-translate-ws?targetLang=${encodeURIComponent(targetLang)}&userId=${encodeURIComponent(userId)}`);
 
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-      const gen = sessionGenRef.current;
-
-      ws.onopen = () => {
-        setLiveStatusText(isAr ? 'متصل بـ Gemini 3.5 Live Translate' : 'Connected to Gemini 3.5 Live Translate');
-      };
-
-      ws.onmessage = async (event) => {
-        if (gen !== sessionGenRef.current) return;
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'live_ready') {
-            setIsLiveActive(true);
-            setLiveStatusText(isAr ? 'تحدث الآن، الترجمة الحية نشطة...' : 'Speak now, live translation active...');
-            await startLiveMicStream(gen);
-          } else if (msg.type === 'translated_text' && msg.text) {
-            setTranslatedText(prev => prev ? prev + ' ' + msg.text : msg.text);
-          } else if (msg.type === 'interrupted') {
-            // Model detected an interruption: fade out queued playback smoothly
-            clearOutputPlayback();
-          } else if (msg.type === 'audio' && msg.audio) {
-            playAudioChunk(msg.audio, gen);
-          } else if (msg.type === 'guest_limit_reached') {
-            setTranslatedText(msg.message || (isAr ? 'انتهت مدة الاستخدام اليومية للترجمة الصوتية الحية.' : 'Daily live voice limit reached.'));
-            stopLiveSession();
-          } else if (msg.type === 'error') {
-            console.error("Live translation error message:", msg.message);
-            stopLiveSession();
-          }
-        } catch (e) {
-          console.error("Failed to parse Live WS message:", e);
-        }
-      };
-
-      ws.onerror = (e) => {
-        console.error("Live WS error:", e);
-        stopLiveSession();
-      };
-
-      ws.onclose = () => {
-        setIsLiveActive(false);
-        setIsRecording(false);
-      };
-
+      sessionActiveRef.current = true;
+      const engine = ensureEngine();
+      await engine.connect(wsUrl);
+      // The engine's onMessage router handles live_ready -> startCapture()
     } catch (err: any) {
       console.warn('Live translation start error:', err);
       stopLiveSession();
     }
   };
 
-  const startLiveMicStream = async (gen: number) => {
-    try {
-      if (gen !== sessionGenRef.current) return;
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        }
-      });
-      if (gen !== sessionGenRef.current) {
-        try { stream.getTracks().forEach(t => t.stop()); } catch(e) {}
-        return;
-      }
-      mediaStreamRef.current = stream;
 
-      // Dedicated 16kHz capture context (the architecture used by the official
-      // Gemini Live web sample): Chrome resamples the mic natively, no aliasing,
-      // and the capture graph stays fully isolated from the playback graph.
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioCtx({ sampleRate: 16000 });
-      if (audioCtx.state === 'suspended') {
-        try { await audioCtx.resume(); } catch (e) {}
-      }
-      inputAudioCtxRef.current = audioCtx;
-      // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
-      micOpenTimeRef.current = performance.now();
-
-      const source = audioCtx.createMediaStreamSource(stream);
-      const processor = audioCtx.createScriptProcessor(2048, 1, 1);
-      scriptProcessorRef.current = processor;
-      
-      source.connect(processor);
-      
-      // Connect to a dummy gain node (muted) to keep the audio graph active in some browsers
-      const dummyGain = audioCtx.createGain();
-      dummyGain.gain.value = 0;
-      processor.connect(dummyGain);
-      dummyGain.connect(audioCtx.destination);
-
-      processor.onaudioprocess = (e) => {
-        if (gen !== sessionGenRef.current) return;
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-        const nowMs = performance.now();
-
-        // Drop the mic-open pop / "recording start" artifact so the model never hears it
-        if (nowMs - micOpenTimeRef.current < 600) return;
-
-        // Half-duplex guard: never feed the translator its own spoken output echo
-        if (activeSourcesRef.current.length > 0) {
-          // Deadlock-proofing: if the scheduled queue already finished playing a
-          // while ago but an onended handler was lost, unblock the mic
-          const outCtx = outputAudioCtxRef.current;
-          const queueDone = !outCtx || outCtx.state === 'closed' || nextPlayTimeRef.current < outCtx.currentTime - 0.25;
-          if (queueDone) {
-            activeSourcesRef.current.forEach(s => { try { s.onended = null; s.stop(); } catch (e) {} });
-            activeSourcesRef.current = [];
-          } else {
-            lastPlaybackEndRef.current = nowMs;
-            return;
-          }
-        }
-        // Short tail after playback ends so speaker echo/reverb decays before mic reopens
-        if (nowMs - lastPlaybackEndRef.current < 300) return;
-
-        const inputData = e.inputBuffer.getChannelData(0);
-
-        // Gentle noise gate: skip near-silence so background hum never triggers false turns
-        let gateSum = 0;
-        for (let i = 0; i < inputData.length; i++) gateSum += inputData[i] * inputData[i];
-        if (Math.sqrt(gateSum / inputData.length) < 0.004) return;
-
-        // Capture context runs at exactly 16kHz — no manual downsampling needed
-        const pcm16 = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          let s = Math.max(-1, Math.min(1, inputData[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-
-        // Convert to Base64
-        const bytes = new Uint8Array(pcm16.buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.byteLength; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const base64Chunk = btoa(binary);
-
-        wsRef.current.send(JSON.stringify({
-          type: 'audio',
-          audio: base64Chunk,
-          mimeType: 'audio/pcm;rate=16000'
-        }));
-      };
-
-    } catch (err) {
-      console.warn("Microphone access error in Live Translate:", err);
-      stopLiveSession();
-    }
-  };
 
   useEffect(() => {
     return () => {
