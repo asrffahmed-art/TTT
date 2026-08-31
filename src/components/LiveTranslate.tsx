@@ -80,8 +80,12 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
   const outputGainRef = useRef<GainNode | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const inputAudioCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // Session generation: bumped on every stop; async callbacks from an older
+  // generation are dropped so audio can never continue after the session ends
+  const sessionGenRef = useRef<number>(0);
   // Echo protection: mic gating timestamps (ms) — prevents the translator from hearing its own output
   const micOpenTimeRef = useRef<number>(0);
   const lastPlaybackEndRef = useRef<number>(0);
@@ -268,22 +272,41 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       master.gain.value = 1;
       master.connect(outputAudioCtxRef.current.destination);
       outputGainRef.current = master;
+      // Silent unlock: open the audio device ONCE here instead of letting it
+      // wake up later mid-session with an audible pop (pure digital silence)
+      try {
+        const unlock = outputAudioCtxRef.current.createBuffer(1, 2048, outputAudioCtxRef.current.sampleRate);
+        const src = outputAudioCtxRef.current.createBufferSource();
+        src.buffer = unlock;
+        src.connect(master);
+        src.start();
+      } catch (e) {}
     }
     if (outputAudioCtxRef.current.state === 'suspended') {
       await outputAudioCtxRef.current.resume();
+      // Ensure a previously faded/suspended master gain never stays muted
+      try {
+        const g = outputGainRef.current?.gain;
+        if (g) { g.cancelScheduledValues(outputAudioCtxRef.current.currentTime); g.setValueAtTime(1, outputAudioCtxRef.current.currentTime); }
+      } catch (e) {}
     }
     return outputAudioCtxRef.current;
   };
 
-  const playAudioChunk = async (base64Data: string) => {
+  const playAudioChunk = async (base64Data: string, gen: number) => {
+    if (gen !== sessionGenRef.current) return;
     try {
       const ctx = await ensureOutputCtx();
+      // Drop late chunks from a closed/restarted session — this is what stops
+      // audio from continuing after the user ends the live session
+      if (gen !== sessionGenRef.current) return;
       const binary = atob(base64Data);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
       }
-      const pcm16 = new Int16Array(bytes.buffer);
+      const pcm16 = new Int16Array(bytes.buffer, 0, Math.floor(bytes.byteLength / 2));
+      if (pcm16.length === 0) return;
       const float32 = new Float32Array(pcm16.length);
       for (let i = 0; i < pcm16.length; i++) {
         float32[i] = pcm16[i] / (pcm16[i] < 0 ? 0x8000 : 0x7FFF);
@@ -359,12 +382,14 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
   };
 
   const stopLiveSession = () => {
+    sessionGenRef.current++;
     setIsRecording(false);
     setIsLiveActive(false);
     setLiveStatusText('');
     clearOutputPlayback();
 
     if (scriptProcessorRef.current) {
+      try { scriptProcessorRef.current.onaudioprocess = null; } catch(e) {}
       try { scriptProcessorRef.current.disconnect(); } catch(e) {}
       scriptProcessorRef.current = null;
     }
@@ -372,6 +397,18 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       try { mediaStreamRef.current.getTracks().forEach(t => t.stop()); } catch(e) {}
       mediaStreamRef.current = null;
     }
+    // Tear down the 16kHz capture context entirely
+    if (inputAudioCtxRef.current) {
+      try { inputAudioCtxRef.current.close().catch(() => {}); } catch(e) {}
+      inputAudioCtxRef.current = null;
+    }
+    // Suspend the output context: freezes all scheduled/in-flight audio instantly,
+    // guaranteeing silence the moment the session ends
+    if (outputAudioCtxRef.current && outputAudioCtxRef.current.state === 'running') {
+      try { outputAudioCtxRef.current.suspend().catch(() => {}); } catch(e) {}
+    }
+    micOpenTimeRef.current = 0;
+    lastPlaybackEndRef.current = 0;
     if (wsRef.current) {
       try {
         if (wsRef.current.readyState === WebSocket.OPEN) {
@@ -401,25 +438,27 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
 
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
+      const gen = sessionGenRef.current;
 
       ws.onopen = () => {
         setLiveStatusText(isAr ? 'متصل بـ Gemini 3.5 Live Translate' : 'Connected to Gemini 3.5 Live Translate');
       };
 
       ws.onmessage = async (event) => {
+        if (gen !== sessionGenRef.current) return;
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'live_ready') {
             setIsLiveActive(true);
             setLiveStatusText(isAr ? 'تحدث الآن، الترجمة الحية نشطة...' : 'Speak now, live translation active...');
-            await startLiveMicStream();
+            await startLiveMicStream(gen);
           } else if (msg.type === 'translated_text' && msg.text) {
             setTranslatedText(prev => prev ? prev + ' ' + msg.text : msg.text);
           } else if (msg.type === 'interrupted') {
             // Model detected an interruption: fade out queued playback smoothly
             clearOutputPlayback();
           } else if (msg.type === 'audio' && msg.audio) {
-            playAudioChunk(msg.audio);
+            playAudioChunk(msg.audio, gen);
           } else if (msg.type === 'guest_limit_reached') {
             setTranslatedText(msg.message || (isAr ? 'انتهت مدة الاستخدام اليومية للترجمة الصوتية الحية.' : 'Daily live voice limit reached.'));
             stopLiveSession();
@@ -448,8 +487,9 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
     }
   };
 
-  const startLiveMicStream = async () => {
+  const startLiveMicStream = async (gen: number) => {
     try {
+      if (gen !== sessionGenRef.current) return;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -458,12 +498,21 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
           autoGainControl: true,
         }
       });
+      if (gen !== sessionGenRef.current) {
+        try { stream.getTracks().forEach(t => t.stop()); } catch(e) {}
+        return;
+      }
       mediaStreamRef.current = stream;
 
-      // Reuse the single native-rate AudioContext for mic capture too:
-      // creating a second 16kHz context forces an audio device reconfiguration,
-      // which is exactly what produces the audible pop when the session starts.
-      const audioCtx = await ensureOutputCtx();
+      // Dedicated 16kHz capture context (the architecture used by the official
+      // Gemini Live web sample): Chrome resamples the mic natively, no aliasing,
+      // and the capture graph stays fully isolated from the playback graph.
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx({ sampleRate: 16000 });
+      if (audioCtx.state === 'suspended') {
+        try { await audioCtx.resume(); } catch (e) {}
+      }
+      inputAudioCtxRef.current = audioCtx;
       // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
       micOpenTimeRef.current = performance.now();
 
@@ -480,6 +529,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       dummyGain.connect(audioCtx.destination);
 
       processor.onaudioprocess = (e) => {
+        if (gen !== sessionGenRef.current) return;
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
         const nowMs = performance.now();
@@ -489,8 +539,17 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
 
         // Half-duplex guard: never feed the translator its own spoken output echo
         if (activeSourcesRef.current.length > 0) {
-          lastPlaybackEndRef.current = nowMs;
-          return;
+          // Deadlock-proofing: if the scheduled queue already finished playing a
+          // while ago but an onended handler was lost, unblock the mic
+          const outCtx = outputAudioCtxRef.current;
+          const queueDone = !outCtx || outCtx.state === 'closed' || nextPlayTimeRef.current < outCtx.currentTime - 0.25;
+          if (queueDone) {
+            activeSourcesRef.current.forEach(s => { try { s.onended = null; s.stop(); } catch (e) {} });
+            activeSourcesRef.current = [];
+          } else {
+            lastPlaybackEndRef.current = nowMs;
+            return;
+          }
         }
         // Short tail after playback ends so speaker echo/reverb decays before mic reopens
         if (nowMs - lastPlaybackEndRef.current < 300) return;
@@ -502,27 +561,10 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
         for (let i = 0; i < inputData.length; i++) gateSum += inputData[i] * inputData[i];
         if (Math.sqrt(gateSum / inputData.length) < 0.004) return;
 
-        // Downsample from the context's native rate to 16kHz for Gemini Live
-        const nativeRate = audioCtx.sampleRate;
-        let pcmData = inputData;
-        if (nativeRate > 16000 * 1.01) {
-          const ratio = nativeRate / 16000;
-          const outLen = Math.floor(inputData.length / ratio);
-          const down = new Float32Array(outLen);
-          for (let i = 0; i < outLen; i++) {
-            const start = Math.floor(i * ratio);
-            const end = Math.min(Math.floor((i + 1) * ratio), inputData.length);
-            let acc = 0;
-            for (let j = start; j < end; j++) acc += inputData[j];
-            down[i] = acc / Math.max(1, end - start);
-          }
-          pcmData = down;
-        }
-
-        // Convert Float32Array to Int16Array PCM
-        const pcm16 = new Int16Array(pcmData.length);
-        for (let i = 0; i < pcmData.length; i++) {
-          let s = Math.max(-1, Math.min(1, pcmData[i]));
+        // Capture context runs at exactly 16kHz — no manual downsampling needed
+        const pcm16 = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          let s = Math.max(-1, Math.min(1, inputData[i]));
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 

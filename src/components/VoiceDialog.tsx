@@ -60,6 +60,10 @@ export function VoiceDialog({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const outputGainRef = useRef<GainNode | null>(null);
+  const inputAudioCtxRef = useRef<AudioContext | null>(null);
+  // Session generation: every restart bumps it; async callbacks from an older
+  // generation are dropped so audio from a closed call can never play again.
+  const sessionGenRef = useRef<number>(0);
 
   // Echo protection: mic gating timestamps (ms) — prevents the model from hearing its own voice
   const micOpenTimeRef = useRef<number>(0);
@@ -84,10 +88,25 @@ export function VoiceDialog({
       master.gain.value = 1;
       master.connect(outputAudioCtxRef.current.destination);
       outputGainRef.current = master;
+      // Silent unlock: open the audio device ONCE, here, while the user gesture
+      // is still active — instead of letting it wake up later mid-session with
+      // an audible pop. Pure digital silence, so nothing is actually heard.
+      try {
+        const unlock = outputAudioCtxRef.current.createBuffer(1, 2048, outputAudioCtxRef.current.sampleRate);
+        const src = outputAudioCtxRef.current.createBufferSource();
+        src.buffer = unlock;
+        src.connect(master);
+        src.start();
+      } catch (e) {}
     }
     if (outputAudioCtxRef.current.state === 'suspended') {
       try {
         await outputAudioCtxRef.current.resume();
+        // Ensure a previously faded/suspended master gain never stays muted
+        try {
+          const g = outputGainRef.current?.gain;
+          if (g) { g.cancelScheduledValues(outputAudioCtxRef.current.currentTime); g.setValueAtTime(1, outputAudioCtxRef.current.currentTime); }
+        } catch (e) {}
         setNeedUserGesture(false);
       } catch (e) {
         setNeedUserGesture(true);
@@ -136,10 +155,13 @@ export function VoiceDialog({
     }
   };
 
-  const playAudioChunk = async (base64AudioChunk: string) => {
+  const playAudioChunk = async (base64AudioChunk: string, gen: number) => {
     if (!base64AudioChunk) return;
     const ctx = await ensureOutputCtx();
-    if (!ctx) return;
+    // Drop late chunks from a closed/restarted call (WS close() does not discard
+    // already-received undelivered messages — this guard is what stops audio
+    // from continuing to play after the user hangs up)
+    if (!ctx || !isSessionActiveRef.current || gen !== sessionGenRef.current) return;
 
     try {
       const binary = atob(base64AudioChunk);
@@ -198,6 +220,7 @@ export function VoiceDialog({
 
   const stopSession = () => {
     isSessionActiveRef.current = false;
+    sessionGenRef.current++;
     clearAudioQueue();
 
     if (recognitionRef.current) {
@@ -227,6 +250,21 @@ export function VoiceDialog({
       } catch (e) {}
       mediaStreamRef.current = null;
     }
+    // Tear down the 16kHz capture context entirely
+    if (inputAudioCtxRef.current) {
+      try {
+        inputAudioCtxRef.current.close().catch(() => {});
+      } catch (e) {}
+      inputAudioCtxRef.current = null;
+    }
+    // Suspend the output context: freezes all scheduled/in-flight audio instantly,
+    // guaranteeing silence the moment the call ends (belt-and-braces on top of
+    // the generation guards)
+    if (outputAudioCtxRef.current && outputAudioCtxRef.current.state === 'running') {
+      try { outputAudioCtxRef.current.suspend().catch(() => {}); } catch (e) {}
+    }
+    micOpenTimeRef.current = 0;
+    lastPlaybackEndRef.current = 0;
     if (wsRef.current) {
       try {
         if (wsRef.current.readyState === WebSocket.OPEN) {
@@ -293,7 +331,11 @@ export function VoiceDialog({
     setErrorMessage(null);
     stopSession();
     isSessionActiveRef.current = true;
+    // New generation for this call: all handlers below capture it, and any
+    // in-flight callback from the previous call is dropped automatically
+    const gen = ++sessionGenRef.current;
     await ensureOutputCtx();
+    if (gen !== sessionGenRef.current) return;
     setVoiceState('connecting');
 
     try {
@@ -308,6 +350,7 @@ export function VoiceDialog({
       };
 
       ws.onmessage = async (event) => {
+        if (gen !== sessionGenRef.current) return;
         try {
           const msg = JSON.parse(event.data);
 
@@ -326,11 +369,11 @@ export function VoiceDialog({
             setShowLimitModal(true);
             stopSession();
           } else if (msg.type === 'ready' || msg.type === 'live_ready') {
-            if (!isSessionActiveRef.current) return;
+            if (!isSessionActiveRef.current || gen !== sessionGenRef.current) return;
             setVoiceState('listening');
-            await startMicrophone();
+            await startMicrophone(gen);
 
-            if (!isSessionActiveRef.current) return;
+            if (!isSessionActiveRef.current || gen !== sessionGenRef.current) return;
 
             // Local Speech Recognition for transcript
             const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -370,7 +413,7 @@ export function VoiceDialog({
             clearAudioQueue();
             setVoiceState('listening');
           } else if (msg.type === 'audio' && msg.audio) {
-            playAudioChunk(msg.audio);
+            playAudioChunk(msg.audio, gen);
           } else if (msg.type === 'text' && msg.text) {
             setTranscripts(prev => {
               const last = prev[prev.length - 1];
@@ -403,8 +446,8 @@ export function VoiceDialog({
     }
   };
 
-  const startMicrophone = async () => {
-    if (!isSessionActiveRef.current) return;
+  const startMicrophone = async (gen: number) => {
+    if (!isSessionActiveRef.current || gen !== sessionGenRef.current) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -415,7 +458,7 @@ export function VoiceDialog({
         }
       });
 
-      if (!isSessionActiveRef.current) {
+      if (!isSessionActiveRef.current || gen !== sessionGenRef.current) {
         stream.getTracks().forEach(t => {
           t.enabled = false;
           t.stop();
@@ -425,19 +468,26 @@ export function VoiceDialog({
 
       mediaStreamRef.current = stream;
 
-      // Reuse the single native-rate AudioContext for mic capture too:
-      // creating a second 16kHz context forces an audio device reconfiguration,
-      // which is exactly what produces the audible pop when the session starts.
-      const audioCtx = await ensureOutputCtx();
+      // Dedicated 16kHz capture context (the architecture used by the official
+      // Gemini Live web sample): Chrome resamples the mic natively, no aliasing,
+      // and the capture graph stays fully isolated from the playback graph.
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx({ sampleRate: 16000 });
+      if (audioCtx.state === 'suspended') {
+        try { await audioCtx.resume(); } catch (e) {}
+      }
+      inputAudioCtxRef.current = audioCtx;
       // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
       micOpenTimeRef.current = performance.now();
 
-      if (!isSessionActiveRef.current) {
+      if (!isSessionActiveRef.current || gen !== sessionGenRef.current) {
         stream.getTracks().forEach(t => {
           t.enabled = false;
           t.stop();
         });
         mediaStreamRef.current = null;
+        try { audioCtx.close(); } catch (e) {}
+        inputAudioCtxRef.current = null;
         return;
       }
 
@@ -455,7 +505,8 @@ export function VoiceDialog({
       dummyGain.connect(audioCtx.destination);
 
       processor.onaudioprocess = (e) => {
-        if (!isSessionActiveRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!isSessionActiveRef.current || gen !== sessionGenRef.current) return;
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
         if (isMutedRef.current) return;
 
         const nowMs = performance.now();
@@ -465,8 +516,17 @@ export function VoiceDialog({
 
         // Half-duplex guard: never feed the model its own voice echo while the assistant speaks
         if (activeSourcesRef.current.length > 0) {
-          lastPlaybackEndRef.current = nowMs;
-          return;
+          // Deadlock-proofing: if the scheduled queue already finished playing a
+          // while ago but an onended handler was lost, unblock the mic
+          const outCtx = outputAudioCtxRef.current;
+          const queueDone = !outCtx || outCtx.state === 'closed' || nextPlayTimeRef.current < outCtx.currentTime - 0.25;
+          if (queueDone) {
+            activeSourcesRef.current.forEach(s => { try { s.onended = null; s.stop(); } catch (e) {} });
+            activeSourcesRef.current = [];
+          } else {
+            lastPlaybackEndRef.current = nowMs;
+            return;
+          }
         }
         // Short tail after playback ends so speaker echo/reverb decays before mic reopens
         if (nowMs - lastPlaybackEndRef.current < 300) return;
@@ -478,27 +538,10 @@ export function VoiceDialog({
         for (let i = 0; i < inputData.length; i++) gateSum += inputData[i] * inputData[i];
         if (Math.sqrt(gateSum / inputData.length) < 0.004) return;
 
-        // Downsample from the context's native rate to 16kHz for Gemini Live
-        const nativeRate = audioCtx.sampleRate;
-        let pcmData = inputData;
-        if (nativeRate > 16000 * 1.01) {
-          const ratio = nativeRate / 16000;
-          const outLen = Math.floor(inputData.length / ratio);
-          const down = new Float32Array(outLen);
-          for (let i = 0; i < outLen; i++) {
-            const start = Math.floor(i * ratio);
-            const end = Math.min(Math.floor((i + 1) * ratio), inputData.length);
-            let acc = 0;
-            for (let j = start; j < end; j++) acc += inputData[j];
-            down[i] = acc / Math.max(1, end - start);
-          }
-          pcmData = down;
-        }
-
-        // Convert Float32Array to Int16Array PCM
-        const pcm16 = new Int16Array(pcmData.length);
-        for (let i = 0; i < pcmData.length; i++) {
-          let s = Math.max(-1, Math.min(1, pcmData[i]));
+        // Capture context runs at exactly 16kHz — no manual downsampling needed
+        const pcm16 = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          let s = Math.max(-1, Math.min(1, inputData[i]));
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 

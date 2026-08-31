@@ -17,6 +17,7 @@ export class LiveAudioService {
   private ws: WebSocket | null = null;
   private mediaStream: MediaStream | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
+  private inputAudioCtx: AudioContext | null = null;
   private currentAudio: HTMLAudioElement | null = null;
   private state: LiveAudioState = 'disconnected';
   private isRunning: boolean = false;
@@ -121,10 +122,15 @@ export class LiveAudioService {
     if (!this.mediaStream || !this.isRunning) return;
 
     try {
-      // Single native-rate AudioContext for both capture and playback: no audio
-      // device reconfiguration (the classic audible pop) when the session starts
-      const audioCtx = this.ensureOutputCtx();
-      if (!audioCtx) return;
+      // Dedicated 16kHz capture context (the architecture used by the official
+      // Gemini Live web sample): Chrome resamples the mic natively, no aliasing,
+      // and the capture graph stays fully isolated from the playback graph.
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx({ sampleRate: 16000 });
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+      this.inputAudioCtx = audioCtx;
       // Mark mic open time: the first frames contain the mic-open pop/recording-start artifact
       this.micOpenTime = performance.now();
 
@@ -153,10 +159,23 @@ export class LiveAudioService {
         // Drop the mic-open pop / "recording start" artifact so the model never hears it
         if (nowMs - this.micOpenTime < 600) return;
 
-        // Don't send mic audio when the assistant is currently speaking to prevent echo
-        if (this.state === 'speaking') {
-          this.lastPlaybackEndTime = nowMs;
-          return;
+        // Echo protection: don't send mic audio while the assistant's audio queue
+        // is still playing (half-duplex guard)
+        if (this.queuedSources.length > 0) {
+          const ctx = this.outputAudioCtx;
+          const queueDone = !ctx || ctx.state === 'closed' || this.nextPlayTime < ctx.currentTime - 0.25;
+          if (queueDone) {
+            // Deadlock-proofing: scheduled queue already finished but an onended
+            // handler was lost — unblock the mic (and the UI state)
+            this.queuedSources.forEach(s => { try { s.onended = null; s.stop(); } catch (e) {} });
+            this.queuedSources = [];
+            if (this.isRunning && this.state === 'speaking') {
+              this.setState('listening');
+            }
+          } else {
+            this.lastPlaybackEndTime = nowMs;
+            return;
+          }
         }
         // Short tail after playback ends so speaker echo/reverb decays before mic reopens
         if (nowMs - this.lastPlaybackEndTime < 300) return;
@@ -166,30 +185,14 @@ export class LiveAudioService {
 
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
-        // Downsample from the context's native rate to 16kHz for Gemini Live
-        let pcmData = inputData;
-        const nativeRate = this.outputAudioCtx ? this.outputAudioCtx.sampleRate : 16000;
-        if (nativeRate > 16000 * 1.01) {
-          const ratio = nativeRate / 16000;
-          const outLen = Math.floor(inputData.length / ratio);
-          const down = new Float32Array(outLen);
-          for (let i = 0; i < outLen; i++) {
-            const start = Math.floor(i * ratio);
-            const end = Math.min(Math.floor((i + 1) * ratio), inputData.length);
-            let acc = 0;
-            for (let j = start; j < end; j++) acc += inputData[j];
-            down[i] = acc / Math.max(1, end - start);
-          }
-          pcmData = down;
-        }
-
-        // Send audio PCM chunk directly to server
-        const pcmBuffer = this.floatTo16BitPCM(pcmData);
+        // Capture context runs at exactly 16kHz — no manual downsampling needed
+        const pcmBuffer = this.floatTo16BitPCM(inputData);
         const base64Audio = this.arrayBufferToBase64(pcmBuffer);
 
         this.ws.send(JSON.stringify({
           type: 'audio',
-          data: base64Audio
+          data: base64Audio,
+          mimeType: 'audio/pcm;rate=16000'
         }));
       };
 
@@ -438,9 +441,18 @@ export class LiveAudioService {
   private cleanup() {
     if (this.scriptProcessor) {
       try {
+        this.scriptProcessor.onaudioprocess = null;
         this.scriptProcessor.disconnect();
       } catch (e) {}
       this.scriptProcessor = null;
+    }
+
+    // Close the 16kHz capture context
+    if (this.inputAudioCtx) {
+      try {
+        this.inputAudioCtx.close().catch(() => {});
+      } catch (e) {}
+      this.inputAudioCtx = null;
     }
 
     if (this.outputAudioCtx) {
