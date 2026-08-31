@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "site.thothai.app",
+        "sha256_cert_fingerprints": ["92:4D:FD:DE:F6:4C:73:25:BA:4F:33:92:22:CE:EB:C3:F0:A5:D0:F9:CC:0A:3D:AD:2A:30:B8:1F:A1:C9:0B:72"]
+      }
+    }]
