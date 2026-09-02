@@ -682,6 +682,13 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       if (Array.isArray(e.detail?.sessions)) {
         const updatedList = e.detail.sessions;
         setSessionsList(updatedList);
+        // Guests have no session list by design. An EMPTY guest list broadcast
+        // (fired on every page load via handleUserLogoutCleanup) must NOT reset
+        // the active conversation — doing so minted a fresh session id on each
+        // load and erased the guest's conversation memory entirely.
+        if (!getEffectiveUserId() && updatedList.length === 0) {
+          return;
+        }
         const stillExists = updatedList.some((s: ChatSession) => s.id === sessionIdRef.current);
         if (!stillExists && sessionIdRef.current) {
           if (updatedList.length > 0) {
