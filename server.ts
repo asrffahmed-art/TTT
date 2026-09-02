@@ -4459,33 +4459,39 @@ ${searchContext}
     return { sent: false, method: 'local_preview' };
   }
 
-  // ---------- Shared brand shell (RTL, dark premium, email-client safe) ----------
+  // ---------- Shared brand shell (RTL, THOTH crystal-glass, email-client safe) ----------
+  // Mirrors the platform's default theme: #080914 canvas + top radial indigo glow,
+  // signature pink->purple->indigo gradient, glass cards, Tajawal typography.
   function thothEmailShell(cfg: { preview: string; title: string; subtitle?: string; bodyHtml: string; accentColor?: string; footerNote?: string }): string {
-    const accent = cfg.accentColor || '#6366f1';
+    const pad = '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
     return `<!DOCTYPE html>
-<html dir="rtl" lang="ar"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/></head>
-<body style="margin:0;padding:0;background-color:#070a13;">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${cfg.preview}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#070a13;">
-<tr><td align="center" style="padding:34px 12px;font-family:'Segoe UI',Tahoma,Arial,sans-serif;" dir="rtl">
-  <table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
-    <tr><td align="center" style="padding-bottom:22px;">
-      <div style="font-size:27px;font-weight:900;letter-spacing:2px;color:#ffffff;">THOTH <span style="color:#818cf8;">AI</span></div>
-      <div style="font-size:11px;color:#8ea0b8;margin-top:5px;letter-spacing:3px;">منظومة الذكاء الاصطناعي الفائقة</div>
+<html dir="rtl" lang="ar"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&amp;family=JetBrains+Mono:wght@600&amp;display=swap" rel="stylesheet"/></head>
+<body style="margin:0;padding:0;background-color:#05060d;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${cfg.preview}${pad}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#05060d;">
+<tr><td align="center" dir="rtl" style="padding:36px 12px;background-color:#05060d;background-image:radial-gradient(900px 420px at 50% -8%, rgba(99,102,241,0.22), transparent 62%), radial-gradient(700px 380px at 88% 112%, rgba(236,72,153,0.12), transparent 58%);font-family:'Tajawal','Segoe UI',Tahoma,Arial,sans-serif;">
+  <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;">
+    <tr><td align="center" style="padding-bottom:18px;">
+      <img src="${THOTH_APP_URL}/icons/icon-512.png" width="74" height="74" alt="THOTH AI" style="display:block;margin:0 auto 12px auto;border-radius:20px;border:1px solid rgba(255,255,255,0.16);"/>
+      <div style="font-size:26px;font-weight:800;letter-spacing:1px;color:#ffffff;">THOTH <span style="color:#f472b6;">AI</span></div>
+      <div style="font-size:10.5px;color:#7c8698;margin-top:5px;letter-spacing:4px;font-weight:500;">الذكاء الاصطناعي بمعايير استثنائية</div>
     </td></tr>
     <tr><td>
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#111624;border:1px solid rgba(255,255,255,0.09);border-radius:20px;">
-        <tr><td style="height:5px;background-color:${accent};font-size:0;line-height:0;">&nbsp;</td></tr>
-        <tr><td style="padding:36px 32px 30px 32px;">
-          <h1 style="margin:0 0 8px 0;font-size:21px;font-weight:800;color:#ffffff;">${cfg.title}</h1>
-          ${cfg.subtitle ? `<p style="margin:0 0 18px 0;font-size:13px;color:#94a3b8;line-height:1.7;">${cfg.subtitle}</p>` : '<div style="height:12px;line-height:12px;">&nbsp;</div>'}
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0a0d18;background-image:linear-gradient(180deg,#12101f 0%,#0a0d18 55%);border:1px solid rgba(255,255,255,0.12);border-radius:24px;">
+        <tr><td style="padding:38px 36px 32px 36px;">
+          <h1 style="margin:0;font-size:22px;font-weight:800;color:#ffffff;line-height:1.5;">${cfg.title}</h1>
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:12px 0 0 0;"><tr><td width="72" height="4" style="background-color:#a855f7;background-image:linear-gradient(90deg,#ec4899,#a855f7,#6366f1);border-radius:3px;font-size:0;line-height:0;">&nbsp;</td></tr></table>
+          ${cfg.subtitle ? `<p style="margin:14px 0 0 0;font-size:14px;color:#a9b4c9;line-height:1.9;font-weight:500;">${cfg.subtitle}</p>` : ''}
+          <div style="height:20px;line-height:20px;">&nbsp;</div>
           ${cfg.bodyHtml}
         </td></tr>
       </table>
     </td></tr>
-    <tr><td align="center" style="padding-top:24px;">
-      <a href="${THOTH_APP_URL}" style="display:inline-block;background-color:#6366f1;color:#ffffff;text-decoration:none;font-weight:700;font-size:13px;padding:12px 36px;border-radius:12px;">فتح منصة THOTH AI</a>
-      <div style="font-size:10.5px;color:#5b6b82;margin-top:16px;line-height:1.8;">
+    <tr><td align="center" style="padding-top:22px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" style="background-color:#7c3aed;background-image:linear-gradient(90deg,#ec4899,#a855f7,#6366f1);border-radius:16px;">
+        <a href="${THOTH_APP_URL}" style="display:inline-block;padding:14px 44px;color:#ffffff;text-decoration:none;font-weight:800;font-size:14.5px;font-family:'Tajawal','Segoe UI',Tahoma,Arial,sans-serif;">فتح منصة THOTH AI</a>
+      </td></tr></table>
+      <div style="font-size:10.5px;color:#5d6778;margin-top:18px;line-height:1.9;font-weight:500;">
         ${cfg.footerNote ? cfg.footerNote + '<br/>' : ''}© 2026 THOTH AI — جميع الحقوق محفوظة<br/>
         هذه رسالة آلية من منظومة THOTH، يرجى عدم الرد عليها مباشرة.
       </div>
@@ -4496,8 +4502,8 @@ ${searchContext}
   }
 
   function thothCtaButton(label: string, href: string, color: string): string {
-    return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:22px auto 4px auto;"><tr><td>
-      <a href="${href}" style="display:inline-block;background-color:${color};color:#ffffff;text-decoration:none;font-weight:800;font-size:14px;padding:14px 42px;border-radius:14px;">${label}</a>
+    return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:24px auto 4px auto;"><tr><td align="center" style="background-color:${color};background-image:linear-gradient(90deg,#ec4899,#a855f7,#6366f1);border-radius:16px;">
+      <a href="${href}" style="display:inline-block;padding:14px 44px;color:#ffffff;text-decoration:none;font-weight:800;font-size:14.5px;font-family:'Tajawal','Segoe UI',Tahoma,Arial,sans-serif;">${label}</a>
     </td></tr></table>`;
   }
 
@@ -4521,15 +4527,18 @@ ${searchContext}
     const html = thothEmailShell({
       preview: `رمز التحقق ${cfg.code} — صالح لمدة 10 دقائق`,
       title: 'رمز التحقق (OTP)',
-      subtitle: `مرحباً${cfg.name ? ` <strong style="color:#e2e8f0;">${cfg.name}</strong>` : ''}، استخدم الرمز التالي ${purposeText}:`,
+      subtitle: `مرحباً${cfg.name ? ` <strong style="color:#ffffff;">${cfg.name}</strong>` : ''}، استخدم الرمز التالي ${purposeText}:`,
       bodyHtml: `
-        <div style="background-color:rgba(99,102,241,0.10);border:2px dashed #6366f1;border-radius:16px;padding:20px 16px;text-align:center;margin:6px 0 16px 0;">
-          <div style="font-size:40px;font-weight:900;letter-spacing:10px;color:#a5b4fc;font-family:'Courier New',monospace;direction:ltr;">${cfg.code}</div>
-        </div>
-        <div style="background-color:rgba(255,255,255,0.04);border-radius:12px;padding:13px 16px;font-size:12px;color:#8ea0b8;line-height:1.8;">
-          <strong style="color:#c3cce9;">تنبيهات أمان:</strong> هذا الرمز صالح لمدة 10 دقائق فقط، ولا تشاركه مع أي شخص — فريق THOTH لن يطلبه منك أبداً.
-        </div>`,
-      accentColor: '#6366f1'
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background-color:#8b5cf6;background-image:linear-gradient(135deg,#ec4899,#a855f7,#6366f1);border-radius:22px;padding:2px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0b0e1a;border-radius:20px;"><tr><td align="center" style="padding:26px 18px;">
+            <div style="font-family:'JetBrains Mono','Courier New',monospace;font-size:42px;font-weight:600;letter-spacing:12px;color:#ffffff;direction:ltr;text-indent:12px;">${cfg.code}</div>
+            <div style="font-size:11px;color:#7c8698;margin-top:10px;letter-spacing:2px;font-weight:500;">الرمز صالح لمدة 10 دقائق</div>
+          </td></tr></table>
+        </td></tr></table>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;"><tr><td style="background-color:#131622;border:1px solid rgba(255,255,255,0.10);border-radius:14px;padding:14px 18px;font-size:12px;color:#8b909f;line-height:1.9;font-weight:500;">
+          <strong style="color:#f9a8d4;">تنبيه أمان:</strong> هذا الرمز صالح لمدة 10 دقائق فقط، ولا تشاركه مع أي شخص — فريق THOTH لن يطلبه منك أبداً.
+        </td></tr></table>`,
+      accentColor: '#a855f7'
     });
     return { subject, html };
   }
@@ -4543,12 +4552,12 @@ ${searchContext}
       ['🎧', 'ملخصات صوتية', 'حوّل المحتوى الطويل لملخصات مسموعة']
     ];
     const featureCells = features.map(([icon, title, desc], i) => `
-        <td width="50%" style="padding:6px;" valign="top">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:14px;">
-            <tr><td style="padding:15px 14px;">
-              <div style="font-size:20px;margin-bottom:6px;">${icon}</div>
-              <div style="font-size:12.5px;font-weight:800;color:#e2e8f0;margin-bottom:4px;">${title}</div>
-              <div style="font-size:11px;color:#8ea0b8;line-height:1.6;">${desc}</div>
+        <td width="50%" style="padding:5px;" valign="top">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#12141f;border:1px solid rgba(255,255,255,0.10);border-radius:16px;">
+            <tr><td style="padding:16px 14px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td width="38" height="38" align="center" valign="middle" style="background-color:#8b5cf6;background-image:linear-gradient(135deg,#ec4899,#a855f7,#6366f1);border-radius:12px;font-size:17px;">${icon}</td></tr></table>
+              <div style="font-size:13px;font-weight:800;color:#ffffff;margin-top:10px;">${title}</div>
+              <div style="font-size:11px;color:#8b909f;line-height:1.7;margin-top:4px;font-weight:500;">${desc}</div>
             </td></tr>
           </table>
         </td>${i % 2 === 1 ? '</tr><tr>' : ''}`).join('');
@@ -4557,12 +4566,12 @@ ${searchContext}
       title: `أهلاً بك في عائلة THOTH${cfg.name ? ` يا ${cfg.name}` : ''} 🎉`,
       subtitle: 'تم تأكيد بريدك الإلكتروني بنجاح، وحسابك أصبح جاهزاً تماماً. إليك ما ينتظرك داخل المنصة:',
       bodyHtml: `
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 8px 0;"><tr>${featureCells}</tr></table>
-        <div style="background-color:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);border-radius:12px;padding:13px 16px;font-size:12px;color:#a7f3d0;line-height:1.8;margin-top:10px;">
-          💡 <strong>نصيحة سريعة:</strong> فعّل الإشعارات من إعدادات المنصة لتصلك التنبيهات والملخصات اليومية فوراً.
-        </div>
-        ${thothCtaButton('ابدأ الاستخدام الآن', THOTH_APP_URL, '#10b981')}`,
-      accentColor: '#10b981',
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>${featureCells}</tr></table>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#131622;border:1px solid rgba(236,72,153,0.30);border-radius:14px;padding:14px 18px;font-size:12px;color:#d9dee9;line-height:1.9;font-weight:500;">
+          💡 <strong style="color:#f9a8d4;">نصيحة سريعة:</strong> فعّل الإشعارات من إعدادات المنصة لتصلك التنبيهات والملخصات اليومية فوراً.
+        </td></tr></table>
+        ${thothCtaButton('ابدأ الاستخدام الآن', THOTH_APP_URL, '#8b5cf6')}`,
+      accentColor: '#ec4899',
       footerNote: 'أنت تستلم هذه الرسالة لأنك أنشأت حساباً جديداً في منصة THOTH AI.'
     });
     return { subject: 'مرحباً بك في THOTH AI — حسابك جاهز الآن!', html };
@@ -4575,38 +4584,32 @@ ${searchContext}
     const providerLabel = providerNames[(cfg.provider || '').toLowerCase()] || cfg.provider || '—';
     const expiryLabel = cfg.expiresAt ? new Date(cfg.expiresAt).toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' }) : '—';
     const priceLine = cfg.amount ? `${cfg.amount} ${cfg.currency || 'EGP'}` : '—';
+    const infoCard = (label: string, valueHtml: string) => `
+      <td width="50%" style="padding:6px;" valign="top">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#12141f;border:1px solid rgba(255,255,255,0.10);border-radius:14px;">
+          <tr><td style="padding:14px 16px;">
+            <div style="font-size:10.5px;color:#7c8698;font-weight:500;letter-spacing:1px;">${label}</div>
+            <div style="font-size:14.5px;font-weight:800;color:#ffffff;margin-top:4px;">${valueHtml}</div>
+          </td></tr>
+        </table>
+      </td>`;
     const html = thothEmailShell({
       preview: `تم تفعيل اشتراكك في خطة ${planName} بنجاح`,
       title: 'تم تفعيل اشتراكك بنجاح 🏆',
-      subtitle: `مرحباً${cfg.name ? ` <strong style="color:#e2e8f0;">${cfg.name}</strong>` : ''}، أصبحت الآن مشتركاً في خطة <strong style="color:#fbbf24;">${planName}</strong> — استمتع بكامل مزايا المنصة دون قيود!`,
+      subtitle: `مرحباً${cfg.name ? ` <strong style="color:#ffffff;">${cfg.name}</strong>` : ''}، أصبحت الآن مشتركاً في خطة <strong style="color:#fbbf24;">${planName}</strong> — استمتع بكامل مزايا المنصة دون قيود!`,
       bodyHtml: `
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 12px 0;">
-          <tr>
-            <td style="padding:7px;"><div style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 15px;">
-              <div style="font-size:10.5px;color:#8ea0b8;margin-bottom:3px;">الخطة</div>
-              <div style="font-size:14px;font-weight:800;color:#fbbf24;">${planName}</div>
-            </div></td>
-            <td style="padding:7px;"><div style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 15px;">
-              <div style="font-size:10.5px;color:#8ea0b8;margin-bottom:3px;">المبلغ المدفوع</div>
-              <div style="font-size:14px;font-weight:800;color:#e2e8f0;direction:ltr;text-align:right;">${priceLine}</div>
-            </div></td>
-          </tr>
-          <tr>
-            <td style="padding:7px;"><div style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 15px;">
-              <div style="font-size:10.5px;color:#8ea0b8;margin-bottom:3px;">تاريخ الانتهاء</div>
-              <div style="font-size:13px;font-weight:800;color:#e2e8f0;">${expiryLabel}</div>
-            </div></td>
-            <td style="padding:7px;"><div style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 15px;">
-              <div style="font-size:10.5px;color:#8ea0b8;margin-bottom:3px;">طريقة الدفع</div>
-              <div style="font-size:13px;font-weight:800;color:#e2e8f0;">${providerLabel}</div>
-            </div></td>
-          </tr>
-        </table>
-        <div style="background-color:rgba(251,191,36,0.07);border:1px solid rgba(251,191,36,0.22);border-radius:12px;padding:13px 16px;font-size:12px;color:#fde68a;line-height:1.8;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          ${infoCard('الخطة', `<span style="color:#fbbf24;">${planName}</span>`)}
+          ${infoCard('المبلغ المدفوع', `<span style="direction:ltr;unicode-bidi:embed;">${priceLine}</span>`)}
+        </tr><tr>
+          ${infoCard('تاريخ الانتهاء', expiryLabel)}
+          ${infoCard('طريقة الدفع', providerLabel)}
+        </tr></table>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;"><tr><td style="background-color:#131622;border:1px solid rgba(251,191,36,0.30);border-radius:14px;padding:14px 18px;font-size:12px;color:#fde68a;line-height:1.9;font-weight:500;">
           ✨ <strong>مزايا خطتك:</strong> حدود استخدام أعلى، موديلات متقدمة، ملخصات صوتية أطول، وأولوية في المعالجة.
-        </div>
-        ${thothCtaButton('استكشف مزايا خطتك', THOTH_APP_URL, '#f59e0b')}`,
-      accentColor: '#f59e0b',
+        </td></tr></table>
+        ${thothCtaButton('استكشف مزايا خطتك', THOTH_APP_URL, '#8b5cf6')}`,
+      accentColor: '#fbbf24',
       footerNote: 'أنت تستلم هذه الرسالة بسبب تفعيل اشتراك مدفوع في حسابك.'
     });
     return { subject: `🎉 تم تفعيل اشتراكك في خطة ${planName} — THOTH AI`, html };
@@ -4698,10 +4701,13 @@ ${searchContext}
           to: [targetEmail.trim()],
           subject: "رسالة اختبار منصة Resend - THOTH AI",
           html: `
-            <div dir="rtl" style="font-family: sans-serif; background:#0b0f19; color:#fff; padding:30px; border-radius:16px;">
-              <h2 style="color:#6366f1;">اختبار الاتصال بمنصة Resend 🚀</h2>
-              <p>تم إرسال هذه الرسالة بنجاح للتحقق من سلامة مفتاح Resend API الخاص بك في منصة THOTH AI.</p>
-              <p style="color:#10b981; font-weight:bold;">الحالة: متصل وجاهز لإرسال أكواد الـ OTP والرسائل الفورية!</p>
+            <div dir="rtl" style="font-family:'Tajawal','Segoe UI',Tahoma,Arial,sans-serif; background-color:#05060d; background-image:radial-gradient(600px 300px at 50% -10%, rgba(99,102,241,0.25), transparent 65%); color:#dfe3e8; padding:38px 32px; border-radius:24px; border:1px solid rgba(255,255,255,0.12);">
+              <div style="text-align:center; margin-bottom:16px;">
+                <span style="display:inline-block; width:72px; height:4px; background-color:#a855f7; background-image:linear-gradient(90deg,#ec4899,#a855f7,#6366f1); border-radius:3px;">&nbsp;</span>
+              </div>
+              <h2 style="margin:0; font-size:20px; font-weight:800; color:#ffffff;">اختبار الاتصال بمنصة Resend 🚀</h2>
+              <p style="font-size:13.5px; line-height:1.9; color:#a9b4c9;">تم إرسال هذه الرسالة بنجاح للتحقق من سلامة مفتاح Resend API الخاص بك في منصة THOTH AI.</p>
+              <p style="margin-bottom:0; font-size:13px; font-weight:800;"><span style="background-color:#131622; border:1px solid rgba(236,72,153,0.35); border-radius:10px; padding:8px 14px; display:inline-block; color:#f9a8d4;">الحالة: متصل وجاهز لإرسال رسائل THOTH الفورية!</span></p>
             </div>
           `
         })
