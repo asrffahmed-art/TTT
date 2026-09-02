@@ -271,8 +271,9 @@ function normalizeMessageImages(msg: ChatMessage): ChatMessage {
 export function getLocalSessionMessagesSync(sessionId: string): ChatMessage[] {
   if (!sessionId) return [];
   const userId = getEffectiveUserId();
-  if (!userId) return [];
 
+  // Guests get persistent local memory too (localStorage-backed), so the
+  // conversation survives page refreshes and the model keeps its context.
   const deletedSet = getDeletedSessionsSet(userId);
   if (deletedSet.has(sessionId)) return [];
 
@@ -294,20 +295,12 @@ export async function loadSessionMessages(sessionId: string): Promise<ChatMessag
   if (!sessionId) return [];
   const userId = getEffectiveUserId();
 
-  // For Guests: no saved persistent history
-  if (!userId) {
-    return [];
-  }
-
-  const deletedSet = getDeletedSessionsSet(userId);
-  if (deletedSet.has(sessionId)) {
-    return [];
-  }
-
   const cacheKey = getSessionMsgsStorageKey(userId, sessionId);
   let messages: ChatMessage[] = [];
 
-  // 1. Try local user-scoped storage cache
+  // 1. Try local cache first (works for signed-in users AND guests —
+  //    guests keep their conversation memory in localStorage so the model
+  //    still remembers the chat after a page refresh)
   try {
     const raw = localStorage.getItem(cacheKey);
     if (raw) {
@@ -318,12 +311,24 @@ export async function loadSessionMessages(sessionId: string): Promise<ChatMessag
     }
   } catch (e) {}
 
-  // 2. Fetch from Firestore server for this specific user
+  // 2. Guests: local-only persistent memory (no server account to sync with)
+  if (!userId) {
+    return messages.map(normalizeMessageImages);
+  }
+
+  const deletedSet = getDeletedSessionsSet(userId);
+  if (deletedSet.has(sessionId)) {
+    return [];
+  }
+
+  // 3. Fetch from Firestore server for this specific user
   try {
     const serverMsgs = await getChatSessionMessages(userId, sessionId);
     if (serverMsgs && Array.isArray(serverMsgs) && serverMsgs.length > 0) {
       messages = serverMsgs;
-      localStorage.setItem(cacheKey, JSON.stringify(serverMsgs));
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify(serverMsgs));
+      } catch (quotaErr) {}
     }
   } catch (err) {
     console.warn('Could not fetch remote session messages, using local cache:', err);
@@ -340,16 +345,25 @@ export function saveLocalSessionMessages(sessionId: string, messages: ChatMessag
   const deletedSet = getDeletedSessionsSet(userId);
   if (deletedSet.has(sessionId)) return;
 
+  // Never wipe existing memory on transient empty states (e.g. the momentary
+  // clear while switching sessions) — deletion flows remove keys explicitly.
+  if (!messages || messages.length === 0) return;
+
   const cacheKey = getSessionMsgsStorageKey(userId, sessionId);
   try {
-    if (!messages || messages.length === 0) {
-      localStorage.removeItem(cacheKey);
-    } else {
-      if (userId) {
-        localStorage.setItem(cacheKey, JSON.stringify(messages));
-      }
+    // Cap stored history to protect localStorage quota (guests have no server
+    // backup, so they rely entirely on this cache for conversation memory).
+    const capped = messages.length > 80 ? messages.slice(-80) : messages;
+    localStorage.setItem(cacheKey, JSON.stringify(capped));
+  } catch (e) {
+    // Quota exceeded → keep at least the most recent half for guests
+    if (!userId) {
+      try {
+        const half = messages.slice(-Math.max(1, Math.floor(messages.length / 2)));
+        localStorage.setItem(cacheKey, JSON.stringify(half));
+      } catch (e2) {}
     }
-  } catch (e) {}
+  }
 }
 
 // Create a new session for current user
@@ -375,7 +389,23 @@ export function createNewSession(customTitle?: string): ChatSession {
     setActiveSessionId(newId);
     window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: updatedList } }));
   } else {
-    // For Guests: transient in-memory only
+    // For Guests: keep the active session pointer, and prune old guest
+    // message caches so localStorage never grows unbounded (keep newest 3).
+    try {
+      const guestKeys: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('thoth_guest_msgs_')) guestKeys.push(k);
+      }
+      const keyTime = (k: string) => {
+        const m = k.match(/(\d+)/);
+        return m ? Number(m[1]) : 0;
+      };
+      guestKeys.sort((a, b) => keyTime(b) - keyTime(a));
+      guestKeys.slice(3).forEach(k => {
+        if (k !== `thoth_guest_msgs_${newId}`) localStorage.removeItem(k);
+      });
+    } catch (e) {}
     localStorage.setItem(getActiveChatStorageKey(null), newId);
   }
 
