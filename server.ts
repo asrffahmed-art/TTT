@@ -10359,6 +10359,14 @@ app.all("/api/*", (req, res) => {
                 clearWatchdog();
                 console.log("[GEMINI LIVE] Live session closed:", modelName);
                 if (switchedAway) return; // deliberate close during model failover
+                // Primary closed the underlying socket BEFORE completing
+                // setup (e.g. invalid/overloaded model) — treat as failure:
+                // fail over transparently instead of killing the user's call.
+                if (isFailoverCandidate && !setupCompleted) {
+                  switchedAway = true;
+                  startFallback('closed before setup complete');
+                  return;
+                }
                 if (guestUsageInterval) clearInterval(guestUsageInterval);
                 if (ws.readyState === WebSocket.OPEN) ws.close();
               },
