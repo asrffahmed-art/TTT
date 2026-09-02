@@ -622,9 +622,16 @@ export async function clearAllSessions(): Promise<void> {
   window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: [newS] } }));
 }
 
-// Cleanup function on logout to isolate accounts completely
+// Cleanup function on logout / guest page load to switch the visible session
+// list to the guest's own on-device one
 export function handleUserLogoutCleanup(): void {
-  window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: [] } }));
+  // Broadcast the GUEST's actual local session list instead of an empty one.
+  // An empty broadcast used to wipe the freshly-loaded guest sidebar list on
+  // every page load (the last writer won), making it look like "guests save
+  // nothing". getEffectiveUserId() is already null at this point, so
+  // getCachedSessions() reads the guest list ('thoth_guest_sessions').
+  // Guests with no sessions yet simply broadcast an empty list as before.
+  window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: getCachedSessions() } }));
   // IMPORTANT: reuse the SAME persisted guest session id instead of minting a
   // fresh guest_<timestamp> one. A new id on every auth-resolve made each page
   // load look like a brand-new conversation: the guest's saved messages were
