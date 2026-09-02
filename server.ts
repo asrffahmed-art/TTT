@@ -10256,15 +10256,58 @@ app.all("/api/*", (req, res) => {
         // failover is already running (prevents double fallback connects)
         let failoverEngaged = false;
 
-        const connectLive = (modelName: string, isFailoverCandidate: boolean): Promise<any> => {
+        const SETUP_TIMEOUT_MS = 12000; // abandon a silent/hung model after 12s
+
+        // Single failover entry point (guarded — can only ever run once)
+        const startFallback = (why: string) => {
+          if (failoverEngaged) return;
+          failoverEngaged = true;
+          console.warn("[GEMINI LIVE] Primary unavailable (" + why + ") — failing over to:", FALLBACK_LIVE_MODEL);
+          connectLive(FALLBACK_LIVE_MODEL, false)
+            .then((s: any) => {
+              session = s;
+              console.log("[GEMINI LIVE] Fallback session started successfully");
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'live_ready' }));
+              }
+            })
+            .catch((fbErr: any) => {
+              console.error("[GEMINI LIVE ERROR] Fallback model also failed:", fbErr);
+              if (guestUsageInterval) clearInterval(guestUsageInterval);
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'error', message: 'فشل تهيئة الاتصال الصوتي المباشر: ' + (fbErr?.message || String(fbErr)) }));
+              }
+            });
+        };
+
+        // Connect to one Live model. isFailoverCandidate=true (the primary)
+        // adds a setup watchdog: covers connect() rejection, early onerror,
+        // and the silent-hang case (no setupComplete) — failing over to the
+        // fallback model transparently. The fallback attempt itself has no
+        // watchdog (proven model; behaves exactly like the old code).
+        const connectLive = (modelName: string, isFailoverCandidate: boolean): Promise<any> => new Promise((resolve, reject) => {
           // Per-attempt flag: this session is being abandoned in favour of the
           // fallback — its onclose must NOT tear down the browser socket.
           let switchedAway = false;
-          return ai.live.connect({
+          let settled = false;
+          let resolvedSession: any = null;
+          let watchdog: any = null;
+          const clearWatchdog = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null; } };
+
+          if (isFailoverCandidate) {
+            watchdog = setTimeout(() => {
+              if (setupCompleted || switchedAway) return;
+              switchedAway = true;
+              try { resolvedSession?.close(); } catch (e) {}
+              startFallback('no setupComplete within ' + (SETUP_TIMEOUT_MS / 1000) + 's');
+            }, SETUP_TIMEOUT_MS);
+          }
+
+          ai.live.connect({
             model: modelName,
             config: {
               responseModalities: [Modality.AUDIO],
-              systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي).",
+                systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي).",
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: finalVoiceName } },
               },
@@ -10273,6 +10316,7 @@ app.all("/api/*", (req, res) => {
               onmessage: (message: LiveServerMessage) => {
                 if ((message as any).setupComplete) {
                   setupCompleted = true;
+                  clearWatchdog();
                   console.log("[GEMINI LIVE] Setup complete from callback:", modelName);
                   if (ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({ type: 'live_ready' }));
@@ -10312,6 +10356,7 @@ app.all("/api/*", (req, res) => {
                 }
               },
               onclose: () => {
+                clearWatchdog();
                 console.log("[GEMINI LIVE] Live session closed:", modelName);
                 if (switchedAway) return; // deliberate close during model failover
                 if (guestUsageInterval) clearInterval(guestUsageInterval);
@@ -10319,29 +10364,12 @@ app.all("/api/*", (req, res) => {
               },
               onerror: (err: any) => {
                 console.error("[GEMINI LIVE ERROR] (" + modelName + "):", err);
-                // Transparent failover: the primary died BEFORE completing
-                // setup — silently retry ONCE on the fallback model instead
-                // of surfacing an error to the user.
-                if (isFailoverCandidate && !switchedAway && !setupCompleted) {
+                // Transparent failover: primary died BEFORE completing setup
+                if (isFailoverCandidate && !setupCompleted) {
                   switchedAway = true;
-                  failoverEngaged = true;
-                  try { session?.close(); } catch (e) {}
-                  console.warn("[GEMINI LIVE] Primary unavailable — failing over to:", FALLBACK_LIVE_MODEL);
-                  connectLive(FALLBACK_LIVE_MODEL, false)
-                    .then((s: any) => {
-                      session = s;
-                      console.log("[GEMINI LIVE] Fallback session started successfully");
-                      if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'live_ready' }));
-                      }
-                    })
-                    .catch((fbErr: any) => {
-                      console.error("[GEMINI LIVE ERROR] Fallback model also failed:", fbErr);
-                      if (guestUsageInterval) clearInterval(guestUsageInterval);
-                      if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'error', message: 'فشل تهيئة الاتصال الصوتي المباشر: ' + (fbErr?.message || String(fbErr)) }));
-                      }
-                    });
+                  clearWatchdog();
+                  try { resolvedSession?.close(); } catch (e) {}
+                  startFallback('connection error: ' + (err?.message || String(err)));
                   return;
                 }
                 if (guestUsageInterval) clearInterval(guestUsageInterval);
@@ -10350,21 +10378,25 @@ app.all("/api/*", (req, res) => {
                 }
               }
             }
+          }).then((s: any) => {
+            resolvedSession = s;
+            // Resolve immediately; the watchdog keeps guarding until setupComplete
+            if (!settled) { settled = true; resolve(s); }
+          }).catch((e: any) => {
+            // connect() itself rejected (unknown model / auth / network)
+            clearWatchdog();
+            if (isFailoverCandidate && !setupCompleted) {
+              switchedAway = true;
+              startFallback('connect failed: ' + (e?.message || String(e)));
+              if (!settled) { settled = true; resolve(null); } // failover drives the session
+            } else if (!settled) {
+              settled = true;
+              reject(e);
+            }
           });
-        };
+        });
 
-        try {
-          session = await connectLive(targetModel, targetModel !== FALLBACK_LIVE_MODEL);
-        } catch (primaryErr: any) {
-          // connect() itself rejected (unknown model / auth / network) —
-          // transparently fail over to the proven fallback model once.
-          if (targetModel === FALLBACK_LIVE_MODEL || failoverEngaged) {
-            throw primaryErr;
-          }
-          console.warn("[GEMINI LIVE] Primary connect failed — failing over to:", FALLBACK_LIVE_MODEL, primaryErr);
-          session = await connectLive(FALLBACK_LIVE_MODEL, false);
-        }
-
+        session = await connectLive(targetModel, targetModel !== FALLBACK_LIVE_MODEL);
         console.log("[GEMINI LIVE] Session started successfully");
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'live_ready' }));
