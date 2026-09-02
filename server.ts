@@ -4546,7 +4546,7 @@ ${searchContext}
   // ---------- Template: Welcome (new registration) ----------
   function buildWelcomeEmail(cfg: { name?: string }): { subject: string; html: string } {
     const features: Array<[string, string, string]> = [
-      ['🧠', 'محادثة ذكية متقدمة', 'مساعد Gemini يفهم ويحلل وينجز مهامك'],
+      ['🧠', 'محادثة ذكية متقدمة', 'مساعد THOTH الذكي يفهم ويحلل وينجز مهامك'],
       ['📄', 'تحليل الملفات والمستندات', 'ارفع PDF وصور واكتشف المحتوى بدقة'],
       ['🌍', 'ترجمة فورية 26 لغة', 'ترجمة حية بكل اللهجات العربية'],
       ['🎧', 'ملخصات صوتية', 'حوّل المحتوى الطويل لملخصات مسموعة']

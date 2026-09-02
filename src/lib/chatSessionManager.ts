@@ -152,10 +152,11 @@ function isSessionWithinOneYear(session: ChatSession): boolean {
   return (Date.now() - time) <= ONE_YEAR_MS;
 }
 
-// Get all cached sessions strictly for current user
+// Get all cached sessions strictly for current user (guests included —
+// their session list lives under the shared 'thoth_guest_sessions' key so
+// past conversations stay visible and reopenable without an account)
 export function getCachedSessions(): ChatSession[] {
   const userId = getEffectiveUserId();
-  if (!userId) return []; // Guests have no saved sessions
 
   try {
     const raw = localStorage.getItem(getSessionsStorageKey(userId));
@@ -175,10 +176,22 @@ export function getCachedSessions(): ChatSession[] {
 // Fetch all sessions strictly for current logged-in user
 export async function loadAllSessions(): Promise<ChatSession[]> {
   const userId = getEffectiveUserId();
-  
-  // GUESTS: Completely disable history loading & saving
+
+  // GUESTS: local-only session list (no server account to sync with).
+  // Past conversations stay saved on-device and visible in the sidebar.
   if (!userId) {
-    return [];
+    const deletedSet = getDeletedSessionsSet(null);
+    const guestList = getCachedSessions().filter(s => !deletedSet.has(s.id));
+    guestList.sort((a, b) => {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
+      const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
+    localStorage.setItem(getSessionsStorageKey(null), JSON.stringify(guestList));
+    window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: guestList } }));
+    return guestList;
   }
 
   const deletedSet = getDeletedSessionsSet(userId);
@@ -389,9 +402,14 @@ export function createNewSession(customTitle?: string): ChatSession {
     setActiveSessionId(newId);
     window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: updatedList } }));
   } else {
-    // For Guests: keep the active session pointer, and prune old guest
-    // message caches so localStorage never grows unbounded (keep newest 3).
+    // For Guests: register the new session in the on-device list (so past
+    // conversations stay visible and reopenable), and prune old guest
+    // message caches so localStorage never grows unbounded (keep newest 5).
     try {
+      const guestList = getCachedSessions().filter(s => s.id !== newId);
+      guestList.unshift(newSession);
+      localStorage.setItem(getSessionsStorageKey(null), JSON.stringify(guestList));
+
       const guestKeys: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
@@ -402,9 +420,14 @@ export function createNewSession(customTitle?: string): ChatSession {
         return m ? Number(m[1]) : 0;
       };
       guestKeys.sort((a, b) => keyTime(b) - keyTime(a));
-      guestKeys.slice(3).forEach(k => {
+      guestKeys.slice(5).forEach(k => {
         if (k !== `thoth_guest_msgs_${newId}`) localStorage.removeItem(k);
       });
+      const survivingIds = new Set(guestKeys.slice(0, 5).map(k => k.replace('thoth_guest_msgs_', '')));
+      survivingIds.add(newId);
+      const prunedGuestList = guestList.filter(s => survivingIds.has(s.id));
+      localStorage.setItem(getSessionsStorageKey(null), JSON.stringify(prunedGuestList));
+      window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: prunedGuestList } }));
     } catch (e) {}
     localStorage.setItem(getActiveChatStorageKey(null), newId);
   }
@@ -420,9 +443,9 @@ export async function touchSession(
   mediaInfo?: { mediaUrl?: string; mediaType?: string; isVideo?: boolean; thumbnailUrl?: string }
 ): Promise<void> {
   const userId = getEffectiveUserId();
-  // GUESTS: NEVER save or touch sessions
-  if (!userId) return;
-
+  // GUESTS: update the on-device session list only (everything below is
+  // localStorage-based; there is no server write in this function), so past
+  // conversations stay visible in the sidebar without an account.
   const deletedSet = getDeletedSessionsSet(userId);
   if (deletedSet.has(sessionId)) return;
 
@@ -609,4 +632,76 @@ export function handleUserLogoutCleanup(): void {
   // thoth_guest_active_session, so the identity (and its localStorage cache)
   // stays stable across reloads.
   window.dispatchEvent(new CustomEvent('thoth_active_session_changed', { detail: { sessionId: getActiveSessionId() } }));
+}
+
+// ---------------------------------------------------------------------------
+// Cross-conversation memory (THOTH auto-memory)
+// ---------------------------------------------------------------------------
+// The model only ever sees the CURRENT conversation's messages. When the user
+// starts a NEW conversation, context from previous conversations was lost —
+// the reply felt like "the first time it knows you". This builds a compact
+// digest from the most recent previous conversations (on-device caches) so
+// Chat.tsx can prepend it to the first message of a fresh conversation.
+// Pure client-side: nothing structural changes on the server, the digest
+// simply arrives as part of the normal messages array.
+const MEMORY_WELCOME_SNIPPETS = [
+  'مرحباً! أنا نموذج THOTH',
+  'Hello! I am THOTH AI'
+];
+const MEMORY_MAX_SESSIONS = 4;
+const MEMORY_MAX_MSGS_PER_SESSION = 8;
+const MEMORY_MAX_CHARS_PER_LINE = 280;
+const MEMORY_MAX_TOTAL_CHARS = 6000;
+
+export function buildCrossSessionMemory(currentSessionId: string): string | null {
+  try {
+    const sessions = getCachedSessions()
+      .filter(s => s && s.id && s.id !== currentSessionId)
+      .slice(0, MEMORY_MAX_SESSIONS + 3); // small buffer before filtering
+
+    const blocks: string[] = [];
+    let totalChars = 0;
+
+    for (const session of sessions) {
+      if (blocks.length >= MEMORY_MAX_SESSIONS) break;
+
+      const msgs = getLocalSessionMessagesSync(session.id);
+      if (!msgs || msgs.length === 0) continue;
+
+      const dialogueLines: string[] = [];
+      for (const m of msgs.slice(-MEMORY_MAX_MSGS_PER_SESSION)) {
+        const text = (m?.text || '').trim();
+        if (!text) continue; // media-only messages carry no memory
+        if ((m as any).isLimitError || (m as any).isServerError) continue;
+        if (MEMORY_WELCOME_SNIPPETS.some(sn => text.startsWith(sn))) continue;
+        const line = text.length > MEMORY_MAX_CHARS_PER_LINE
+          ? text.substring(0, MEMORY_MAX_CHARS_PER_LINE) + '…'
+          : text;
+        dialogueLines.push(m.isUser ? `المستخدم: ${line}` : `THOTH: ${line}`);
+      }
+      if (dialogueLines.length === 0) continue;
+
+      const when = new Date(session.updatedAt || session.createdAt || Date.now());
+      const whenStr = isNaN(when.getTime()) ? '' : when.toLocaleDateString('ar-EG');
+      const block = `— محادثة${whenStr ? ` بتاريخ ${whenStr}` : ''}:\n${dialogueLines.join('\n')}`;
+
+      if (totalChars + block.length > MEMORY_MAX_TOTAL_CHARS) break;
+      blocks.push(block);
+      totalChars += block.length;
+    }
+
+    if (blocks.length === 0) return null;
+
+    return [
+      '[ذاكرة THOTH التلقائية — مقتطفات من محادثات سابقة مع هذا المستخدم على المنصة، لتذكّر السياق عبر المحادثات.]',
+      '[لا تعلّق عليها ولا تعدّدها ولا تعتبرها المحادثة الحالية؛ استخدمها بصمت كخلفية إذا كانت ذات صلة بما سؤال المستخدم الآن.]',
+      '',
+      blocks.join('\n\n'),
+      '',
+      '[انتهت الذاكرة — المحادثة الجديدة تبدأ الآن.]'
+    ].join('\n');
+  } catch (e) {
+    console.warn('buildCrossSessionMemory failed (non-fatal):', e);
+    return null;
+  }
 }

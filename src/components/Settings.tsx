@@ -863,7 +863,7 @@ export function Settings({ onClose, onLogout, onOpenSubscription, onOpenAdminPan
                     <Volume2 className="w-5 h-5" />
                   </div>
                   <div className="truncate">
-                    <span className="text-sm font-bold text-white block">{t('geminiVoices', 'أصوات النموذج الذكي (Gemini Model Voices)')}</span>
+                    <span className="text-sm font-bold text-white block">{t('geminiVoices', 'أصوات النموذج الذكي (THOTH)')}</span>
                     <span className="text-[11px] text-white/50 block truncate">{t('geminiVoicesDesc', 'اختر الصوت الأصلي للنموذج عند التحدث والرد الصوتي')}</span>
                   </div>
                 </div>

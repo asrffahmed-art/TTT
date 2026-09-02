@@ -359,7 +359,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
 
     try {
       setIsRecording(true);
-      setLiveStatusText(isAr ? 'جاري الاتصال بـ Gemini Live Translate...' : 'Connecting to Gemini Live Translate...');
+      setLiveStatusText(isAr ? 'جاري الاتصال بمحرك THOTH للترجمة الحية...' : 'Connecting to THOTH Live Translate...');
 
       const targetLang = targetLangId === 'ar' ? (targetDialectId || 'ar_msa') : targetLangId;
       const currentUser = auth.currentUser;
@@ -591,7 +591,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
             <span className="text-xs font-bold text-red-200">
-              {liveStatusText || (isAr ? 'الترجمة الصوتية الحية نشطة (Gemini 3.5 Live Translate)' : 'Live voice translation active (Gemini 3.5 Live Translate)')}
+              {liveStatusText || (isAr ? 'الترجمة الصوتية الحية نشطة (THOTH Live Translate)' : 'Live voice translation active (THOTH Live Translate)')}
             </span>
           </div>
           <button

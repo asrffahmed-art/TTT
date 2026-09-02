@@ -23,6 +23,7 @@ import {
   deleteSession, 
   getEffectiveUserId,
   getCachedSessions,
+  buildCrossSessionMemory,
   ChatSession 
 } from '../lib/chatSessionManager';
 import { compressImage, prepareVideoForUpload, formatBytes, isCompressibleImage, isCompressibleVideo } from '../lib/mediaCompression';
@@ -1099,6 +1100,17 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         fileRefName: m.fileRefName
       }));
 
+      // THOTH auto-memory: on the FIRST user turn of a conversation, prepend a
+      // compact digest of previous conversations so the model remembers facts
+      // across chats (the server merges it into the opening user turn).
+      const priorUserTurns = updatedMessages.slice(0, -1).filter(m => m.isUser).length;
+      if (priorUserTurns === 0) {
+        const memoryDigest = buildCrossSessionMemory(sessionIdRef.current);
+        if (memoryDigest) {
+          apiMessages.unshift({ role: 'user', text: memoryDigest });
+        }
+      }
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1287,6 +1299,16 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         role: m.isUser ? 'user' : 'model',
         text: m.text
       }));
+
+      // THOTH auto-memory: mirror the original first-turn request when
+      // regenerating the opening response of a fresh conversation.
+      const regenUserTurns = contextMessages.filter(m => m.isUser).length;
+      if (regenUserTurns <= 1) {
+        const memoryDigest = buildCrossSessionMemory(sessionIdRef.current);
+        if (memoryDigest) {
+          apiMessages.unshift({ role: 'user', text: memoryDigest });
+        }
+      }
 
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -2618,7 +2640,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                     <div className="flex items-center justify-between text-xs font-extrabold text-pink-400 border-b border-white/10 pb-2">
                       <span className="flex items-center gap-2">
                         <Sparkles className="w-4 h-4 text-pink-400 animate-spin" />
-                        {isAr ? 'استوديو توليد الصور الفنية (Flux AI)' : 'AI Art & Image Studio (Flux AI)'}
+                        {isAr ? 'استوديو توليد الصور الفنية (THOTH)' : 'AI Art & Image Studio (THOTH)'}
                       </span>
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-pink-500/15 text-pink-300 font-bold border border-pink-500/25">
                         1024x1024 HD
@@ -2994,7 +3016,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                           {isAr ? 'إنشاء صورة ذكية' : 'AI Image Generator'}
                         </span>
                         <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-pink-500/20 text-pink-300 font-bold border border-pink-500/30">
-                          Flux AI
+                          THOTH
                         </span>
                       </div>
                       <span className="text-[10px] text-white/50 truncate">

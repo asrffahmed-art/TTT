@@ -57,7 +57,7 @@ export const translations: Record<string, Record<Language, string>> = {
   // Theme & Voice
   appThemes: { ar: 'ثيمات وألوان التطبيق', en: 'App Themes & Colors' },
   appThemesDesc: { ar: 'اختر المظهر والألوان التي تناسب ذوقك', en: 'Choose your preferred look and colors' },
-  geminiVoices: { ar: 'أصوات النموذج الذكي (Gemini Model Voices)', en: 'AI Model Voices' },
+  geminiVoices: { ar: 'أصوات النموذج الذكي (THOTH)', en: 'THOTH Model Voices' },
   geminiVoicesDesc: { ar: 'اختر الصوت الأصلي للنموذج عند التحدث والرد الصوتي', en: 'Choose the voice used for voice replies' },
   previewVoice: { ar: 'معاينة', en: 'Preview' },
   platformLanguage: { ar: 'لغة المنصة / Language', en: 'Platform Language / اللغة' },
