@@ -4348,50 +4348,74 @@ ${searchContext}
     }
   });
 
-  // Helper to send real OTP verification emails via Resend API or SMTP
-  async function sendOtpEmail(recipientEmail: string, code: string, purpose: string, name?: string) {
+  // =====================================================================
+  // [EMAIL SYSTEM] THOTH Branded Email Center — templates, settings, logs
+  // =====================================================================
+  type ThothEmailType = 'otp' | 'welcome' | 'subscription';
+
+  const THOTH_EMAIL_DEFAULT_FROM = "THOTH AI <noreply@thothai.site>";
+  const THOTH_APP_URL = "https://thothai.site";
+
+  interface ThothEmailSettings { types: Record<ThothEmailType, boolean>; }
+  let thothEmailSettingsCache: ThothEmailSettings | null = null;
+
+  async function getEmailSettings(forceReload = false): Promise<ThothEmailSettings> {
+    if (!forceReload && thothEmailSettingsCache) return thothEmailSettingsCache;
+    const defaults: ThothEmailSettings = { types: { otp: true, welcome: true, subscription: true } };
+    try {
+      const snap = await getDoc(doc(dbWeb, "systemConfig", "emailSettings"));
+      const data = snap.exists() ? snap.data() : {};
+      const types = { ...defaults.types, ...((data as any)?.types || {}) };
+      thothEmailSettingsCache = { types };
+    } catch (err: any) {
+      console.warn("[EMAIL] Failed to load email settings, using defaults:", err?.message);
+      thothEmailSettingsCache = defaults;
+    }
+    return thothEmailSettingsCache;
+  }
+
+  async function logEmailEntry(entry: { to: string; type: string; subject: string; method: string; status: string; providerId?: string; error?: string }) {
+    try {
+      await setDoc(doc(collection(dbWeb, "emailLogs")), {
+        ...entry,
+        createdAt: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.warn("[EMAIL] Failed to write email log:", err?.message);
+    }
+  }
+
+  // Core sender: settings-gate -> Resend API -> SMTP fallback -> logging
+  async function sendBrandedEmail(
+    recipientEmail: string,
+    subject: string,
+    html: string,
+    type: ThothEmailType,
+    opts?: { force?: boolean }
+  ): Promise<{ sent: boolean; method: string; id?: string }> {
     const dbKeys = await getDbApiKeys();
     let resendApiKey = process.env.RESEND_API_KEY || dbKeys.resendApiKey;
     if (!resendApiKey || typeof resendApiKey !== 'string' || resendApiKey.startsWith("****")) {
-      resendApiKey = ""; // Security: keys are read from the environment (RESEND_API_KEY) or from the admin panel only
+      resendApiKey = "";
     }
-    const resendFrom = process.env.RESEND_FROM || dbKeys.resendFrom || "THOTH AI <onboarding@resend.dev>";
+    const resendFrom = process.env.RESEND_FROM || dbKeys.resendFrom || THOTH_EMAIL_DEFAULT_FROM;
 
     const smtpHost = process.env.SMTP_HOST || dbKeys.smtpHost || "";
     const smtpPort = parseInt(process.env.SMTP_PORT || dbKeys.smtpPort || "587");
     const smtpUser = process.env.SMTP_USER || dbKeys.smtpUser || "";
     const smtpPass = process.env.SMTP_PASS || dbKeys.smtpPass || "";
-    const smtpFrom = process.env.SMTP_FROM || dbKeys.smtpFrom || '"THOTH AI" <noreply@thoth.app>';
+    const smtpFrom = process.env.SMTP_FROM || dbKeys.smtpFrom || '"THOTH AI" <noreply@thothai.site>';
 
-    const purposeText = purpose === 'register' 
-      ? 'لتأكيد إنشاء حسابك الجديد' 
-      : purpose === 'login_new_device' 
-      ? 'لتأكيد تسجيل الدخول من جهاز جديد' 
-      : 'لتأكيد هويتك';
+    if (!opts?.force) {
+      const settings = await getEmailSettings();
+      if (!(settings.types as any)[type]) {
+        console.log(`[EMAIL] Type "${type}" disabled by admin — skipped sending to ${recipientEmail}`);
+        await logEmailEntry({ to: recipientEmail, type, subject, method: 'none', status: 'skipped_disabled' });
+        return { sent: false, method: 'disabled' };
+      }
+    }
 
-    const htmlContent = `
-      <div dir="rtl" style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0b0f19; color: #ffffff; padding: 40px 20px; text-align: center;">
-        <div style="max-width: 500px; margin: 0 auto; background: #141824; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
-          <div style="margin-bottom: 24px;">
-            <h1 style="color: #6366f1; margin: 0; font-size: 24px; font-weight: 800;">THOTH AI</h1>
-            <p style="color: #94a3b8; font-size: 13px; margin-top: 4px;">منظومة الذكاء الاصطناعي الفائقة</p>
-          </div>
-          <h2 style="font-size: 18px; color: #ffffff; margin-bottom: 12px;">رمز التحقق (OTP)</h2>
-          <p style="font-size: 14px; color: #cbd5e1; line-height: 1.6; margin-bottom: 24px;">
-            مرحباً ${name ? `<strong>${name}</strong>` : ''}،<br/>
-            استخدم الرمز التالي ${purposeText}:
-          </p>
-          <div style="background: rgba(99, 102, 241, 0.1); border: 2px dashed #6366f1; border-radius: 12px; padding: 18px; margin: 24px 0;">
-            <span style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #818cf8; font-family: monospace;">${code}</span>
-          </div>
-          <p style="font-size: 12px; color: #64748b; margin-top: 20px; line-height: 1.5;">
-            هذا الرمز صالح لمدة 10 دقائق فقط. لا تشارك هذا الرمز مع أي شخص للحفاظ على أمان حسابك.
-          </p>
-        </div>
-      </div>
-    `;
-
-    // 1. Try Resend API first (Highest deliverability)
+    // 1. Resend API (highest deliverability)
     if (resendApiKey) {
       try {
         const resendRes = await fetch("https://api.resend.com/emails", {
@@ -4400,58 +4424,244 @@ ${searchContext}
             "Authorization": `Bearer ${resendApiKey.trim()}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({
-            from: resendFrom.trim(),
-            to: [recipientEmail.trim()],
-            subject: `رمز التحقق الخاص بك في THOTH: ${code}`,
-            html: htmlContent
-          })
+          body: JSON.stringify({ from: resendFrom.trim(), to: [recipientEmail.trim()], subject, html })
         });
-
-        const resendData = await resendRes.json();
+        const resendData: any = await resendRes.json();
         if (resendRes.ok && resendData.id) {
-          console.log(`[OTP] Email sent via Resend successfully to ${recipientEmail} (ID: ${resendData.id})`);
+          await logEmailEntry({ to: recipientEmail, type, subject, method: 'resend', status: 'sent', providerId: resendData.id });
           return { sent: true, method: 'resend', id: resendData.id };
-        } else {
-          if (resendData?.name === 'validation_error' && resendData?.message?.includes('testing emails')) {
-            console.warn(`[OTP] Resend test domain constraint: onboarding@resend.dev only delivers to account owner. Active fallback enabled for ${recipientEmail}.`);
-          } else {
-            console.warn(`[OTP] Resend API error for ${recipientEmail}:`, resendData);
-          }
         }
+        console.warn(`[EMAIL:${type}] Resend API error for ${recipientEmail}:`, resendData);
+        await logEmailEntry({ to: recipientEmail, type, subject, method: 'resend', status: 'failed', error: resendData?.message || JSON.stringify(resendData).slice(0, 200) });
       } catch (resendErr: any) {
-        console.warn(`[OTP] Resend exception:`, resendErr?.message);
+        console.warn(`[EMAIL:${type}] Resend exception:`, resendErr?.message);
       }
     }
 
-    // 2. Fallback to SMTP if configured
+    // 2. SMTP fallback
     if (smtpHost && smtpUser && smtpPass) {
       try {
         const transporter = nodemailer.createTransport({
           host: smtpHost,
           port: smtpPort,
           secure: smtpPort === 465,
-          auth: {
-            user: smtpUser,
-            pass: smtpPass,
-          },
+          auth: { user: smtpUser, pass: smtpPass }
         });
-
-        await transporter.sendMail({
-          from: smtpFrom,
-          to: recipientEmail,
-          subject: `رمز التحقق الخاص بك في THOTH: ${code}`,
-          html: htmlContent,
-        });
-
-        console.log(`[OTP] Email sent successfully via SMTP to ${recipientEmail}`);
+        await transporter.sendMail({ from: smtpFrom, to: recipientEmail, subject, html });
+        await logEmailEntry({ to: recipientEmail, type, subject, method: 'smtp', status: 'sent' });
         return { sent: true, method: 'smtp' };
       } catch (mailErr: any) {
-        console.warn(`[OTP] SMTP error sending to ${recipientEmail}:`, mailErr?.message);
+        console.warn(`[EMAIL:${type}] SMTP error for ${recipientEmail}:`, mailErr?.message);
       }
     }
 
-    // 3. Fallback to local preview if no email provider succeeded
+    await logEmailEntry({ to: recipientEmail, type, subject, method: 'none', status: 'failed' });
+    return { sent: false, method: 'local_preview' };
+  }
+
+  // ---------- Shared brand shell (RTL, dark premium, email-client safe) ----------
+  function thothEmailShell(cfg: { preview: string; title: string; subtitle?: string; bodyHtml: string; accentColor?: string; footerNote?: string }): string {
+    const accent = cfg.accentColor || '#6366f1';
+    return `<!DOCTYPE html>
+<html dir="rtl" lang="ar"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/></head>
+<body style="margin:0;padding:0;background-color:#070a13;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${cfg.preview}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#070a13;">
+<tr><td align="center" style="padding:34px 12px;font-family:'Segoe UI',Tahoma,Arial,sans-serif;" dir="rtl">
+  <table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+    <tr><td align="center" style="padding-bottom:22px;">
+      <div style="font-size:27px;font-weight:900;letter-spacing:2px;color:#ffffff;">THOTH <span style="color:#818cf8;">AI</span></div>
+      <div style="font-size:11px;color:#8ea0b8;margin-top:5px;letter-spacing:3px;">منظومة الذكاء الاصطناعي الفائقة</div>
+    </td></tr>
+    <tr><td>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#111624;border:1px solid rgba(255,255,255,0.09);border-radius:20px;">
+        <tr><td style="height:5px;background-color:${accent};font-size:0;line-height:0;">&nbsp;</td></tr>
+        <tr><td style="padding:36px 32px 30px 32px;">
+          <h1 style="margin:0 0 8px 0;font-size:21px;font-weight:800;color:#ffffff;">${cfg.title}</h1>
+          ${cfg.subtitle ? `<p style="margin:0 0 18px 0;font-size:13px;color:#94a3b8;line-height:1.7;">${cfg.subtitle}</p>` : '<div style="height:12px;line-height:12px;">&nbsp;</div>'}
+          ${cfg.bodyHtml}
+        </td></tr>
+      </table>
+    </td></tr>
+    <tr><td align="center" style="padding-top:24px;">
+      <a href="${THOTH_APP_URL}" style="display:inline-block;background-color:#6366f1;color:#ffffff;text-decoration:none;font-weight:700;font-size:13px;padding:12px 36px;border-radius:12px;">فتح منصة THOTH AI</a>
+      <div style="font-size:10.5px;color:#5b6b82;margin-top:16px;line-height:1.8;">
+        ${cfg.footerNote ? cfg.footerNote + '<br/>' : ''}© 2026 THOTH AI — جميع الحقوق محفوظة<br/>
+        هذه رسالة آلية من منظومة THOTH، يرجى عدم الرد عليها مباشرة.
+      </div>
+    </td></tr>
+  </table>
+</td></tr></table>
+</body></html>`;
+  }
+
+  function thothCtaButton(label: string, href: string, color: string): string {
+    return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:22px auto 4px auto;"><tr><td>
+      <a href="${href}" style="display:inline-block;background-color:${color};color:#ffffff;text-decoration:none;font-weight:800;font-size:14px;padding:14px 42px;border-radius:14px;">${label}</a>
+    </td></tr></table>`;
+  }
+
+  function planDisplayName(planId: string): string {
+    const p = (planId || '').toString().toLowerCase();
+    const base = p.includes('max') ? 'Max' : p.includes('premium') ? 'Premium' : p.includes('business') ? 'Business' : p.includes('team') ? 'Team' : 'Pro';
+    const period = (p.includes('year') || p.includes('annual')) ? 'سنوي' : 'شهري';
+    return `${base} — ${period}`;
+  }
+
+  // ---------- Template: OTP verification ----------
+  function buildOtpEmail(cfg: { code: string; purpose: string; name?: string }): { subject: string; html: string } {
+    const purposeText = cfg.purpose === 'register'
+      ? 'لتأكيد إنشاء حسابك الجديد'
+      : cfg.purpose === 'login_new_device'
+      ? 'لتأكيد تسجيل الدخول من جهاز جديد'
+      : 'لتأكيد هويتك';
+    const subject = cfg.purpose === 'register'
+      ? 'أهلاً بك في THOTH AI — رمز تأكيد حسابك'
+      : 'رمز التحقق الخاص بك في THOTH AI';
+    const html = thothEmailShell({
+      preview: `رمز التحقق ${cfg.code} — صالح لمدة 10 دقائق`,
+      title: 'رمز التحقق (OTP)',
+      subtitle: `مرحباً${cfg.name ? ` <strong style="color:#e2e8f0;">${cfg.name}</strong>` : ''}، استخدم الرمز التالي ${purposeText}:`,
+      bodyHtml: `
+        <div style="background-color:rgba(99,102,241,0.10);border:2px dashed #6366f1;border-radius:16px;padding:20px 16px;text-align:center;margin:6px 0 16px 0;">
+          <div style="font-size:40px;font-weight:900;letter-spacing:10px;color:#a5b4fc;font-family:'Courier New',monospace;direction:ltr;">${cfg.code}</div>
+        </div>
+        <div style="background-color:rgba(255,255,255,0.04);border-radius:12px;padding:13px 16px;font-size:12px;color:#8ea0b8;line-height:1.8;">
+          <strong style="color:#c3cce9;">تنبيهات أمان:</strong> هذا الرمز صالح لمدة 10 دقائق فقط، ولا تشاركه مع أي شخص — فريق THOTH لن يطلبه منك أبداً.
+        </div>`,
+      accentColor: '#6366f1'
+    });
+    return { subject, html };
+  }
+
+  // ---------- Template: Welcome (new registration) ----------
+  function buildWelcomeEmail(cfg: { name?: string }): { subject: string; html: string } {
+    const features: Array<[string, string, string]> = [
+      ['🧠', 'محادثة ذكية متقدمة', 'مساعد Gemini يفهم ويحلل وينجز مهامك'],
+      ['📄', 'تحليل الملفات والمستندات', 'ارفع PDF وصور واكتشف المحتوى بدقة'],
+      ['🌍', 'ترجمة فورية 26 لغة', 'ترجمة حية بكل اللهجات العربية'],
+      ['🎧', 'ملخصات صوتية', 'حوّل المحتوى الطويل لملخصات مسموعة']
+    ];
+    const featureCells = features.map(([icon, title, desc], i) => `
+        <td width="50%" style="padding:6px;" valign="top">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:14px;">
+            <tr><td style="padding:15px 14px;">
+              <div style="font-size:20px;margin-bottom:6px;">${icon}</div>
+              <div style="font-size:12.5px;font-weight:800;color:#e2e8f0;margin-bottom:4px;">${title}</div>
+              <div style="font-size:11px;color:#8ea0b8;line-height:1.6;">${desc}</div>
+            </td></tr>
+          </table>
+        </td>${i % 2 === 1 ? '</tr><tr>' : ''}`).join('');
+    const html = thothEmailShell({
+      preview: 'حسابك في THOTH AI جاهز الآن — اكتشف كل المزايا',
+      title: `أهلاً بك في عائلة THOTH${cfg.name ? ` يا ${cfg.name}` : ''} 🎉`,
+      subtitle: 'تم تأكيد بريدك الإلكتروني بنجاح، وحسابك أصبح جاهزاً تماماً. إليك ما ينتظرك داخل المنصة:',
+      bodyHtml: `
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 8px 0;"><tr>${featureCells}</tr></table>
+        <div style="background-color:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);border-radius:12px;padding:13px 16px;font-size:12px;color:#a7f3d0;line-height:1.8;margin-top:10px;">
+          💡 <strong>نصيحة سريعة:</strong> فعّل الإشعارات من إعدادات المنصة لتصلك التنبيهات والملخصات اليومية فوراً.
+        </div>
+        ${thothCtaButton('ابدأ الاستخدام الآن', THOTH_APP_URL, '#10b981')}`,
+      accentColor: '#10b981',
+      footerNote: 'أنت تستلم هذه الرسالة لأنك أنشأت حساباً جديداً في منصة THOTH AI.'
+    });
+    return { subject: 'مرحباً بك في THOTH AI — حسابك جاهز الآن!', html };
+  }
+
+  // ---------- Template: Subscription activated ----------
+  function buildSubscriptionEmail(cfg: { name?: string; planId: string; amount?: number; currency?: string; expiresAt?: string; provider?: string }): { subject: string; html: string } {
+    const planName = planDisplayName(cfg.planId);
+    const providerNames: Record<string, string> = { paymob: 'Paymob', paypal: 'PayPal', stripe: 'Stripe', manual: 'إدارة المنصة' };
+    const providerLabel = providerNames[(cfg.provider || '').toLowerCase()] || cfg.provider || '—';
+    const expiryLabel = cfg.expiresAt ? new Date(cfg.expiresAt).toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' }) : '—';
+    const priceLine = cfg.amount ? `${cfg.amount} ${cfg.currency || 'EGP'}` : '—';
+    const html = thothEmailShell({
+      preview: `تم تفعيل اشتراكك في خطة ${planName} بنجاح`,
+      title: 'تم تفعيل اشتراكك بنجاح 🏆',
+      subtitle: `مرحباً${cfg.name ? ` <strong style="color:#e2e8f0;">${cfg.name}</strong>` : ''}، أصبحت الآن مشتركاً في خطة <strong style="color:#fbbf24;">${planName}</strong> — استمتع بكامل مزايا المنصة دون قيود!`,
+      bodyHtml: `
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 12px 0;">
+          <tr>
+            <td style="padding:7px;"><div style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 15px;">
+              <div style="font-size:10.5px;color:#8ea0b8;margin-bottom:3px;">الخطة</div>
+              <div style="font-size:14px;font-weight:800;color:#fbbf24;">${planName}</div>
+            </div></td>
+            <td style="padding:7px;"><div style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 15px;">
+              <div style="font-size:10.5px;color:#8ea0b8;margin-bottom:3px;">المبلغ المدفوع</div>
+              <div style="font-size:14px;font-weight:800;color:#e2e8f0;direction:ltr;text-align:right;">${priceLine}</div>
+            </div></td>
+          </tr>
+          <tr>
+            <td style="padding:7px;"><div style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 15px;">
+              <div style="font-size:10.5px;color:#8ea0b8;margin-bottom:3px;">تاريخ الانتهاء</div>
+              <div style="font-size:13px;font-weight:800;color:#e2e8f0;">${expiryLabel}</div>
+            </div></td>
+            <td style="padding:7px;"><div style="background-color:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 15px;">
+              <div style="font-size:10.5px;color:#8ea0b8;margin-bottom:3px;">طريقة الدفع</div>
+              <div style="font-size:13px;font-weight:800;color:#e2e8f0;">${providerLabel}</div>
+            </div></td>
+          </tr>
+        </table>
+        <div style="background-color:rgba(251,191,36,0.07);border:1px solid rgba(251,191,36,0.22);border-radius:12px;padding:13px 16px;font-size:12px;color:#fde68a;line-height:1.8;">
+          ✨ <strong>مزايا خطتك:</strong> حدود استخدام أعلى، موديلات متقدمة، ملخصات صوتية أطول، وأولوية في المعالجة.
+        </div>
+        ${thothCtaButton('استكشف مزايا خطتك', THOTH_APP_URL, '#f59e0b')}`,
+      accentColor: '#f59e0b',
+      footerNote: 'أنت تستلم هذه الرسالة بسبب تفعيل اشتراك مدفوع في حسابك.'
+    });
+    return { subject: `🎉 تم تفعيل اشتراكك في خطة ${planName} — THOTH AI`, html };
+  }
+
+  // ---------- High-level senders ----------
+  async function sendWelcomeEmail(recipientEmail: string, name?: string) {
+    const { subject, html } = buildWelcomeEmail({ name });
+    const result = await sendBrandedEmail(recipientEmail, subject, html, 'welcome');
+    console.log(`[EMAIL:welcome] to ${recipientEmail}: ${result.sent ? result.method : result.method}`);
+    return result;
+  }
+
+  async function notifySubscriptionActivation(opts: { userEmail?: string; userId?: string; planId: string; provider?: string; amount?: number; currency?: string; expiresAt?: string; orderId?: string }) {
+    try {
+      let email = opts.userEmail;
+      let name: string | undefined;
+      if (!email && opts.userId) {
+        const uSnap = await getDoc(doc(dbWeb, "users", opts.userId));
+        if (uSnap.exists()) {
+          email = uSnap.data()?.email;
+          name = uSnap.data()?.name || uSnap.data()?.displayName;
+        }
+      }
+      if (!email || typeof email !== 'string' || !email.includes('@')) {
+        console.warn('[EMAIL:subscription] skipped — no resolvable recipient email');
+        return;
+      }
+      // Dedup: never send twice for the same payment order
+      if (opts.orderId) {
+        const oSnap = await getDoc(doc(dbWeb, "paymentOrders", String(opts.orderId)));
+        if (oSnap.exists() && oSnap.data()?.subscriptionEmailSent) {
+          console.log(`[EMAIL:subscription] order ${opts.orderId} already notified — skipping duplicate`);
+          return;
+        }
+      }
+      const { subject, html } = buildSubscriptionEmail({ name, planId: opts.planId, amount: opts.amount, currency: opts.currency, expiresAt: opts.expiresAt, provider: opts.provider });
+      const result = await sendBrandedEmail(email.trim(), subject, html, 'subscription');
+      if (result.sent && opts.orderId) {
+        await setDoc(doc(dbWeb, "paymentOrders", String(opts.orderId)), { subscriptionEmailSent: true, subscriptionEmailSentAt: new Date().toISOString() }, { merge: true });
+      }
+      console.log(`[EMAIL:subscription] to ${email}: ${result.sent ? result.method : 'failed'}`);
+    } catch (err: any) {
+      console.warn('[EMAIL:subscription] notification error:', err?.message);
+    }
+  }
+
+  // Helper to send real OTP verification emails via Resend API or SMTP
+  async function sendOtpEmail(recipientEmail: string, code: string, purpose: string, name?: string) {
+    const { subject, html } = buildOtpEmail({ code, purpose, name });
+    const result = await sendBrandedEmail(recipientEmail, subject, html, 'otp');
+    if (result.sent) {
+      console.log(`[OTP] Email sent via ${result.method} to ${recipientEmail}${result.id ? ` (ID: ${result.id})` : ''}`);
+      return { sent: true, method: result.method, id: result.id };
+    }
     console.log(`[OTP VERIFICATION CODE FOR ${recipientEmail} (${purpose})]: >>> ${code} <<<`);
     return { sent: false, method: 'local_preview' };
   }
@@ -4519,6 +4729,124 @@ ${searchContext}
     } catch (err: any) {
       console.error("Error testing Resend API:", err);
       return res.status(500).json({ success: false, error: err?.message || "خطأ غير متوقع عند الاتصال بـ Resend" });
+    }
+  });
+
+  // =====================================================================
+  // [EMAIL CENTER] Admin management endpoints — config, logs, preview, test
+  // =====================================================================
+  app.get("/api/admin/email-config", async (req, res) => {
+    try {
+      if (!isAuthorizedAdmin(req)) {
+        return res.status(403).json({ error: "غير مصرح لك بالوصول إلى إعدادات البريد." });
+      }
+      const dbKeys = await getDbApiKeys();
+      const settings = await getEmailSettings(true);
+      const keyRaw = String(process.env.RESEND_API_KEY || dbKeys.resendApiKey || "");
+      const keyConfigured = !!(keyRaw && !keyRaw.startsWith("****") && keyRaw.startsWith("re_"));
+      const keySource = process.env.RESEND_API_KEY ? "environment" : (dbKeys.resendApiKey ? "database" : "none");
+      const from = String(process.env.RESEND_FROM || dbKeys.resendFrom || THOTH_EMAIL_DEFAULT_FROM);
+      res.json({
+        success: true,
+        types: settings.types,
+        from,
+        keyConfigured,
+        keyMasked: keyConfigured ? "********" + keyRaw.slice(-4) : "",
+        keySource,
+        smtpConfigured: !!(dbKeys.smtpHost && dbKeys.smtpUser && dbKeys.smtpPass),
+        senderDomain: from.includes("thothai.site") ? "thothai.site (verified)" : "onboarding@resend.dev (testing)"
+      });
+    } catch (err: any) {
+      console.error("Error reading email config:", err);
+      res.status(500).json({ error: err?.message || "فشل قراءة إعدادات البريد." });
+    }
+  });
+
+  app.post("/api/admin/email-config", async (req, res) => {
+    try {
+      if (!isAuthorizedAdmin(req)) {
+        return res.status(403).json({ error: "غير مصرح لك بتعديل إعدادات البريد." });
+      }
+      const { types } = req.body || {};
+      const cleanTypes: Record<string, boolean> = {};
+      for (const t of ["otp", "welcome", "subscription"]) {
+        cleanTypes[t] = (types as any)?.[t] !== false;
+      }
+      await setDoc(doc(dbWeb, "systemConfig", "emailSettings"), {
+        types: cleanTypes,
+        updatedAt: new Date().toISOString(),
+        updatedBy: req.headers["x-admin-email"] || "admin"
+      }, { merge: true });
+      await getEmailSettings(true);
+      res.json({ success: true, types: cleanTypes, message: "تم حفظ إعدادات أنواع البريد بنجاح." });
+    } catch (err: any) {
+      console.error("Error saving email config:", err);
+      res.status(500).json({ error: err?.message || "فشل حفظ إعدادات البريد." });
+    }
+  });
+
+  app.get("/api/admin/email-logs", async (req, res) => {
+    try {
+      if (!isAuthorizedAdmin(req)) {
+        return res.status(403).json({ error: "غير مصرح لك بالوصول إلى سجل البريد." });
+      }
+      const logsSnap = await getDocs(query(collection(dbWeb, "emailLogs"), orderBy("createdAt", "desc"), limit(50)));
+      const logs = logsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      res.json({ success: true, logs });
+    } catch (err: any) {
+      console.error("Error reading email logs:", err);
+      res.status(500).json({ error: err?.message || "فشل قراءة سجل البريد." });
+    }
+  });
+
+  app.post("/api/admin/email-preview", async (req, res) => {
+    try {
+      if (!isAuthorizedAdmin(req)) {
+        return res.status(403).json({ error: "غير مصرح لك بمعاينة القوالب." });
+      }
+      const type = String(req.body?.type || "otp");
+      if (type === 'welcome') {
+        const tpl = buildWelcomeEmail({ name: "أحمد" });
+        return res.json({ success: true, type, ...tpl });
+      }
+      if (type === 'subscription') {
+        const tpl = buildSubscriptionEmail({ name: "أحمد", planId: "pro", amount: 199, currency: "EGP", expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(), provider: "paymob" });
+        return res.json({ success: true, type, ...tpl });
+      }
+      const tpl = buildOtpEmail({ code: "482915", purpose: "register", name: "أحمد" });
+      return res.json({ success: true, type: 'otp', ...tpl });
+    } catch (err: any) {
+      console.error("Error building email preview:", err);
+      res.status(500).json({ error: err?.message || "فشل توليد معاينة القالب." });
+    }
+  });
+
+  app.post("/api/admin/email-test", async (req, res) => {
+    try {
+      if (!isAuthorizedAdmin(req)) {
+        return res.status(403).json({ error: "غير مصرح لك بإرسال رسائل اختبار." });
+      }
+      const type = String(req.body?.type || "otp");
+      const toEmail = String(req.body?.toEmail || "").trim();
+      if (!toEmail || !toEmail.includes("@")) {
+        return res.status(400).json({ error: "أدخل بريداً إلكترونياً صالحاً للاختبار." });
+      }
+      let subject = "", html = "";
+      if (type === 'welcome') {
+        ({ subject, html } = buildWelcomeEmail({ name: "أحمد" }));
+      } else if (type === 'subscription') {
+        ({ subject, html } = buildSubscriptionEmail({ name: "أحمد", planId: "pro", amount: 199, currency: "EGP", expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(), provider: "paymob" }));
+      } else {
+        ({ subject, html } = buildOtpEmail({ code: Math.floor(100000 + Math.random() * 900000).toString(), purpose: "register", name: "أحمد" }));
+      }
+      const result = await sendBrandedEmail(toEmail, "[اختبار إدارة] " + subject, html, type as ThothEmailType, { force: true });
+      if (result.sent) {
+        return res.json({ success: true, method: result.method, id: result.id, message: `تم إرسال رسالة ${type} التجريبية إلى ${toEmail} بنجاح عبر ${result.method}.` });
+      }
+      return res.status(400).json({ success: false, error: `فشل إرسال رسالة الاختبار (method: ${result.method}). تأكد من مفتاح Resend وحالة الدومين.` });
+    } catch (err: any) {
+      console.error("Error sending test email:", err);
+      res.status(500).json({ error: err?.message || "فشل إرسال رسالة الاختبار." });
     }
   });
 
@@ -4615,10 +4943,25 @@ ${searchContext}
       }
 
       // Success! Mark as verified in Firestore
+      const wasAlreadyVerified = vData.verified === true;
       await setDoc(verificationRef, {
         verified: true,
         verifiedAt: new Date().toISOString()
       }, { merge: true });
+
+      // [EMAIL] Fire-and-forget welcome email for first-time registrations only
+      if (cleanPurpose === 'register' && !wasAlreadyVerified) {
+        (async () => {
+          try {
+            const wQ = query(collection(dbWeb, "users"), where("email", "==", cleanEmail), limit(1));
+            const wSnap = await getDocs(wQ);
+            const wData = wSnap.empty ? null : wSnap.docs[0].data();
+            await sendWelcomeEmail(cleanEmail, (wData && (wData.name || wData.displayName)) || undefined);
+          } catch (wErr: any) {
+            console.warn("[EMAIL:welcome] welcome email error:", wErr?.message);
+          }
+        })();
+      }
 
       // If deviceId provided, register/update trusted device in Firestore
       if (deviceId) {
@@ -6415,6 +6758,20 @@ ${searchContext}
           subscriptionId: subId,
           planUpdatedAt: now.toISOString()
         }, { merge: true });
+      }
+
+      // [EMAIL] Notify the subscriber about the activated plan (fire-and-forget)
+      if ((subData.status || 'active') === 'active') {
+        notifySubscriptionActivation({
+          userEmail: subData.userEmail,
+          userId: targetUid || undefined,
+          planId: subData.planId,
+          provider: subData.provider,
+          amount: subData.amount,
+          currency: subData.currency,
+          expiresAt: subData.expiresAt,
+          orderId: subId
+        }).catch(() => {});
       }
 
       res.json({ success: true, message: "تم حفظ وتفعيل الاشتراك في قاعدة البيانات بنجاح!", subscription: subData });
@@ -9216,6 +9573,15 @@ ${searchContext}
                       planUpdatedAt: new Date().toISOString(),
                       subscriptionId: actualOrderId
                   }, { merge: true });
+
+                  // [EMAIL] Subscription activation notification (fire-and-forget, deduped by orderId)
+                  notifySubscriptionActivation({
+                      userId: orderData.userId.toString(),
+                      planId: orderData.planId.toString(),
+                      provider: 'paymob',
+                      orderId: actualOrderId,
+                      expiresAt: expiresAt.toISOString()
+                  }).catch(() => {});
               }
            }
         }
@@ -9248,6 +9614,14 @@ ${searchContext}
           plan: String(planId),
           planUpdatedAt: new Date().toISOString()
         }, { merge: true });
+
+        // [EMAIL] Subscription activation notification (fire-and-forget, deduped)
+        notifySubscriptionActivation({
+          userId: String(userId),
+          planId: String(planId),
+          provider: 'stripe',
+          orderId: String(orderId)
+        }).catch(() => {});
         
         return res.send(`<html><body><script>
           localStorage.setItem('thoth_user_plan', '${planId}');
@@ -9327,6 +9701,14 @@ ${searchContext}
              paypal_order_id: token || '',
              updated_at: new Date().toISOString()
            }, { merge: true });
+
+           // [EMAIL] Subscription activation notification (fire-and-forget, deduped)
+           notifySubscriptionActivation({
+             userId: userId.toString(),
+             planId: planId.toString(),
+             provider: 'paypal',
+             orderId: orderId.toString()
+           }).catch(() => {});
          }
 
          if (req.headers.accept && req.headers.accept.includes('application/json')) {
