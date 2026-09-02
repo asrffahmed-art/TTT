@@ -36,7 +36,6 @@ export function VoiceDialog({
   const [voiceState, setVoiceState] = useState<'initial' | 'connecting' | 'listening' | 'speaking' | 'error'>('initial');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [transcripts, setTranscripts] = useState<{role: 'user'|'model', text: string}[]>([]);
-  const recognitionRef = useRef<any>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [showVoiceMenu, setShowVoiceMenu] = useState(false);
   const [needUserGesture, setNeedUserGesture] = useState(false);
@@ -60,6 +59,9 @@ export function VoiceDialog({
   // Call engine: owns the WebSocket transport, mic capture (AudioWorklet at
   // 16kHz, official Gemini Live web-sample architecture), jitter-buffered
   // click-free playback, and full generation-guarded teardown.
+  // Mic lifecycle: opened ONCE per live session, streamed continuously to the
+  // Gemini Live backend; speech start/end is detected by the model's built-in
+  // VAD on that same stream (never by re-arming the microphone).
   const engineRef = useRef<LiveCallEngine | null>(null);
 
   const isSessionActiveRef = useRef<boolean>(false);
@@ -75,55 +77,23 @@ export function VoiceDialog({
     if (engineRef.current) {
       try { engineRef.current.stop(true); } catch (e) {}
     }
-    if (recognitionRef.current) {
-      const rec = recognitionRef.current;
-      recognitionRef.current = null;
-      try {
-        rec.onresult = null;
-        rec.onerror = null;
-        rec.onend = null;
-        rec.abort();
-        rec.stop();
-      } catch (e) {}
-    }
     setVoiceState('initial');
   };
 
-  // Local speech recognition for live transcript (browser Web Speech API)
-  const startTranscription = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition && !recognitionRef.current && isSessionActiveRef.current) {
-      try {
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'ar-EG';
-        recognition.continuous = true;
-        recognition.interimResults = true;
-
-        recognition.onresult = (event: any) => {
-          if (!isSessionActiveRef.current) return;
-          let finalTranscript = '';
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              finalTranscript += event.results[i][0].transcript + ' ';
-            }
-          }
-          if (finalTranscript.trim()) {
-            setTranscripts(prev => [...prev, { role: 'user', text: finalTranscript.trim() }]);
-          }
-        };
-        recognition.onerror = () => {};
-        recognition.onend = () => {
-          if (isSessionActiveRef.current && recognitionRef.current === recognition) {
-            try { recognition.start(); } catch (e) {}
-          }
-        };
-        recognition.start();
-        recognitionRef.current = recognition;
-      } catch (e) {
-        console.warn("SpeechRecognition start error:", e);
-      }
-    }
-  };
+  // [ANDROID TICK FIX — ROOT CAUSE REMOVED]
+  // The old build ran a local Web Speech API (SpeechRecognition) alongside the
+  // live call to produce user transcripts. On Chrome Android that recognizer
+  // auto-ends after every utterance (its `continuous` mode is not truly
+  // continuous there), the onend->start() loop re-armed it, and EVERY restart
+  // opened an internal second microphone capture — Chrome Android plays a
+  // system "tick" sound each time a recognition session starts. Windows has no
+  // such sound and iOS PWA never got the API at all, which is why the tick was
+  // heard only on Android.
+  // It is now REMOVED entirely (its transcripts were never rendered). Turn
+  // detection happens exclusively through Gemini's server-side VAD on the ONE
+  // continuous LiveCallEngine stream: mic opened once -> PCM streamed ->
+  // Gemini detects speech end -> response -> mic stays open. No stop/start of
+  // any track, no getUserMedia per turn, no AudioContext churn per turn.
 
   // Friendly microphone error messages (moved verbatim from the old capture code)
   const micErrorMessage = (err: any): string => {
@@ -192,7 +162,6 @@ export function VoiceDialog({
       const engine = engineRef.current;
       if (engine) {
         engine.startCapture()
-          .then(() => { if (isSessionActiveRef.current) startTranscription(); })
           .catch((err: any) => {
             console.warn("Microphone access notice:", err?.name || err?.message || err);
             setErrorMessage(micErrorMessage(err));
