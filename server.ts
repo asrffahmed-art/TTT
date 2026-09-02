@@ -10236,74 +10236,135 @@ app.all("/api/*", (req, res) => {
         const validVoices = ["Aoede", "Charon", "Fenrir", "Kore", "Puck", "Zephyr"];
         const finalVoiceName = validVoices.includes(selectedVoice) ? selectedVoice : "Puck";
 
-        const targetModel = reqUrl.searchParams.get("model") || "gemini-2.5-flash-native-audio-latest";
+        // ─── OWNER DIRECTIVE (voice model chain) ─────────────────────────
+        // Primary  : Gemini 3 Flash Live API -> gemini-3.1-flash-live-preview
+        // Fallback : Gemini 2.5 Flash Native Audio Dialog
+        //            -> gemini-2.5-flash-native-audio-latest (long-proven
+        //               production model), used ONLY if the primary is down.
+        // Explicit ?model= requests (admin diagnostics etc.) still honoured.
+        // Failover happens ONLY before setup completes — never swaps models
+        // mid-conversation. Config, voices, quota and VAD flow unchanged.
+        const PRIMARY_LIVE_MODEL = "gemini-3.1-flash-live-preview";
+        const FALLBACK_LIVE_MODEL = "gemini-2.5-flash-native-audio-latest";
+        const requestedLiveModel = reqUrl.searchParams.get("model");
+        const targetModel = requestedLiveModel || PRIMARY_LIVE_MODEL;
         console.log("[GEMINI LIVE] Connecting to model:", targetModel, "Voice:", finalVoiceName);
 
-        session = await ai.live.connect({
-          model: targetModel,
-          config: {
-            responseModalities: [Modality.AUDIO],
-            systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي).",
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: finalVoiceName } },
+        // True once the live session finished setup
+        let setupCompleted = false;
+        // Guards the rare path where connect() rejects while an onerror-driven
+        // failover is already running (prevents double fallback connects)
+        let failoverEngaged = false;
+
+        const connectLive = (modelName: string, isFailoverCandidate: boolean): Promise<any> => {
+          // Per-attempt flag: this session is being abandoned in favour of the
+          // fallback — its onclose must NOT tear down the browser socket.
+          let switchedAway = false;
+          return ai.live.connect({
+            model: modelName,
+            config: {
+              responseModalities: [Modality.AUDIO],
+              systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي).",
+              speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: finalVoiceName } },
+              },
             },
-          },
-          callbacks: {
-            onmessage: (message: LiveServerMessage) => {
-              if ((message as any).setupComplete) {
-                console.log("[GEMINI LIVE] Setup complete from callback");
+            callbacks: {
+              onmessage: (message: LiveServerMessage) => {
+                if ((message as any).setupComplete) {
+                  setupCompleted = true;
+                  console.log("[GEMINI LIVE] Setup complete from callback:", modelName);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'live_ready' }));
+                  }
+                }
+
+                if (message.serverContent) {
+                   const modelTurn = message.serverContent.modelTurn;
+                   if (modelTurn && modelTurn.parts) {
+                      const parts = modelTurn.parts || [];
+                      for (const part of parts) {
+                          if (part.text) {
+                             if (ws.readyState === WebSocket.OPEN) {
+                                 ws.send(JSON.stringify({ type: 'text', text: part.text }));
+                             }
+                          }
+                          if (part.inlineData && part.inlineData.data) {
+                             const audio = part.inlineData.data;
+                             const mimeType = part.inlineData.mimeType || 'audio/pcm;rate=24000';
+                             if (ws.readyState === WebSocket.OPEN) {
+                                 ws.send(JSON.stringify({
+                                   type: 'audio',
+                                   audio: audio,
+                                   mimeType: mimeType
+                                 }));
+                             }
+                          }
+                      }
+                   }
+
+                   if (message.serverContent.interrupted && ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: 'interrupted' }));
+                   }
+                   if (message.serverContent.turnComplete && ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: 'turn_complete' }));
+                   }
+                }
+              },
+              onclose: () => {
+                console.log("[GEMINI LIVE] Live session closed:", modelName);
+                if (switchedAway) return; // deliberate close during model failover
+                if (guestUsageInterval) clearInterval(guestUsageInterval);
+                if (ws.readyState === WebSocket.OPEN) ws.close();
+              },
+              onerror: (err: any) => {
+                console.error("[GEMINI LIVE ERROR] (" + modelName + "):", err);
+                // Transparent failover: the primary died BEFORE completing
+                // setup — silently retry ONCE on the fallback model instead
+                // of surfacing an error to the user.
+                if (isFailoverCandidate && !switchedAway && !setupCompleted) {
+                  switchedAway = true;
+                  failoverEngaged = true;
+                  try { session?.close(); } catch (e) {}
+                  console.warn("[GEMINI LIVE] Primary unavailable — failing over to:", FALLBACK_LIVE_MODEL);
+                  connectLive(FALLBACK_LIVE_MODEL, false)
+                    .then((s: any) => {
+                      session = s;
+                      console.log("[GEMINI LIVE] Fallback session started successfully");
+                      if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'live_ready' }));
+                      }
+                    })
+                    .catch((fbErr: any) => {
+                      console.error("[GEMINI LIVE ERROR] Fallback model also failed:", fbErr);
+                      if (guestUsageInterval) clearInterval(guestUsageInterval);
+                      if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'فشل تهيئة الاتصال الصوتي المباشر: ' + (fbErr?.message || String(fbErr)) }));
+                      }
+                    });
+                  return;
+                }
+                if (guestUsageInterval) clearInterval(guestUsageInterval);
                 if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: 'live_ready' }));
+                  ws.send(JSON.stringify({ type: 'error', message: 'حدث خطأ في الاتصال بالصوت المباشر: ' + (err?.message || String(err)) }));
                 }
               }
-              
-              if (message.serverContent) {
-                 const modelTurn = message.serverContent.modelTurn;
-                 if (modelTurn && modelTurn.parts) {
-                    const parts = modelTurn.parts || [];
-                    for (const part of parts) {
-                        if (part.text) {
-                           if (ws.readyState === WebSocket.OPEN) {
-                               ws.send(JSON.stringify({ type: 'text', text: part.text }));
-                           }
-                        }
-                        if (part.inlineData && part.inlineData.data) {
-                           const audio = part.inlineData.data;
-                           const mimeType = part.inlineData.mimeType || 'audio/pcm;rate=24000';
-                           if (ws.readyState === WebSocket.OPEN) {
-                               ws.send(JSON.stringify({
-                                 type: 'audio',
-                                 audio: audio,
-                                 mimeType: mimeType
-                               }));
-                           }
-                        }
-                    }
-                 }
-                 
-                 if (message.serverContent.interrupted && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'interrupted' }));
-                 }
-                 if (message.serverContent.turnComplete && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'turn_complete' }));
-                 }
-              }
-            },
-            onclose: () => {
-              console.log("[GEMINI LIVE] Live session closed");
-              if (guestUsageInterval) clearInterval(guestUsageInterval);
-              if (ws.readyState === WebSocket.OPEN) ws.close();
-            },
-            onerror: (err: any) => {
-              console.error("[GEMINI LIVE ERROR]:", err);
-              if (guestUsageInterval) clearInterval(guestUsageInterval);
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'error', message: 'حدث خطأ في الاتصال بالصوت المباشر: ' + (err?.message || String(err)) }));
-              }
             }
+          });
+        };
+
+        try {
+          session = await connectLive(targetModel, targetModel !== FALLBACK_LIVE_MODEL);
+        } catch (primaryErr: any) {
+          // connect() itself rejected (unknown model / auth / network) —
+          // transparently fail over to the proven fallback model once.
+          if (targetModel === FALLBACK_LIVE_MODEL || failoverEngaged) {
+            throw primaryErr;
           }
-        });
-        
+          console.warn("[GEMINI LIVE] Primary connect failed — failing over to:", FALLBACK_LIVE_MODEL, primaryErr);
+          session = await connectLive(FALLBACK_LIVE_MODEL, false);
+        }
+
         console.log("[GEMINI LIVE] Session started successfully");
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'live_ready' }));
