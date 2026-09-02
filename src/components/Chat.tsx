@@ -1067,6 +1067,28 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       ? new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
       : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+    // OWNER RULE: the Audio Summary & Podcast studio is for REGISTERED users
+    // only — guests must never reach it. Belt-and-braces guard: the composer
+    // entries are already hidden for guests; this covers the rare case where
+    // the mode was selected while signed in and the user then signed out
+    // without a page reload.
+    if (selectedMode === 'audio_summary' && !isAuth) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: Date.now(),
+          text: isAr
+            ? '🎙️ ميزة الملخص الصوتي والبودكاست (THOTH Audio) متاحة لأصحاب الحسابات المسجّلة فقط. أنشئ حساباً مجانياً أو سجّل دخولك لتفعيل الاستوديو الصوتي.'
+            : '🎙️ The Audio Summary & Podcast studio (THOTH Audio) is available to registered accounts only. Create a free account or sign in to unlock it.',
+          isUser: false,
+          time: timeString,
+          isLimitError: true
+        }
+      ]);
+      setSelectedMode('fast');
+      return;
+    }
+
     const newMsg: Message = { 
       id: Date.now(), 
       senderId: userId || 'guest',
@@ -3045,7 +3067,9 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                     </div>
                   </button>
 
-                  {/* 2. Voice Summary & Podcast */}
+                  {/* 2. Voice Summary & Podcast — REGISTERED USERS ONLY (owner rule:
+                      guests must never see or reach the audio summary studio) */}
+                  {isAuth && (
                   <button
                     type="button"
                     onClick={() => {
@@ -3073,6 +3097,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                       </span>
                     </div>
                   </button>
+                  )}
 
                   {/* 3. Attach Files & Media */}
                   <button
