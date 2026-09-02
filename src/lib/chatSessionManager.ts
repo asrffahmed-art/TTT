@@ -602,5 +602,11 @@ export async function clearAllSessions(): Promise<void> {
 // Cleanup function on logout to isolate accounts completely
 export function handleUserLogoutCleanup(): void {
   window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: [] } }));
-  window.dispatchEvent(new CustomEvent('thoth_active_session_changed', { detail: { sessionId: `guest_${Date.now()}` } }));
+  // IMPORTANT: reuse the SAME persisted guest session id instead of minting a
+  // fresh guest_<timestamp> one. A new id on every auth-resolve made each page
+  // load look like a brand-new conversation: the guest's saved messages were
+  // orphaned and the model lost all context. getActiveSessionId() persists
+  // thoth_guest_active_session, so the identity (and its localStorage cache)
+  // stays stable across reloads.
+  window.dispatchEvent(new CustomEvent('thoth_active_session_changed', { detail: { sessionId: getActiveSessionId() } }));
 }
