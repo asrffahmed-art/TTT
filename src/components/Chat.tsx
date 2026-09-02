@@ -657,6 +657,17 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionTitle, setEditingSessionTitle] = useState('');
   const [storageErrorBanner, setStorageErrorBanner] = useState<{ message: string; storageUsed?: number; storageLimit?: number } | null>(null);
+
+  // Audio summaries can legitimately take 1-3 minutes under Google-side load
+  // (model 503 retries) — surface a patience hint so users don't think it froze
+  const [slowAudioHint, setSlowAudioHint] = useState(false);
+  useEffect(() => {
+    if (isLoading && selectedMode === 'audio_summary') {
+      const t = setTimeout(() => setSlowAudioHint(true), 15000);
+      return () => clearTimeout(t);
+    }
+    setSlowAudioHint(false);
+  }, [isLoading, selectedMode]);
   
   const isSwitchingSessionRef = useRef<boolean>(false);
   const targetSessionIdRef = useRef<string | null>(null);
@@ -1103,8 +1114,11 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       // THOTH auto-memory: on the FIRST user turn of a conversation, prepend a
       // compact digest of previous conversations so the model remembers facts
       // across chats (the server merges it into the opening user turn).
+      // Skipped for content-processing modes (audio_summary/image) where past
+      // conversation context is meaningless and only bloats the request.
       const priorUserTurns = updatedMessages.slice(0, -1).filter(m => m.isUser).length;
-      if (priorUserTurns === 0) {
+      const memoryEligibleMode = selectedMode !== 'audio_summary' && selectedMode !== 'image';
+      if (memoryEligibleMode && priorUserTurns === 0) {
         const memoryDigest = buildCrossSessionMemory(sessionIdRef.current);
         if (memoryDigest) {
           apiMessages.unshift({ role: 'user', text: memoryDigest });
@@ -1303,7 +1317,8 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       // THOTH auto-memory: mirror the original first-turn request when
       // regenerating the opening response of a fresh conversation.
       const regenUserTurns = contextMessages.filter(m => m.isUser).length;
-      if (regenUserTurns <= 1) {
+      const regenMemoryEligible = selectedMode !== 'audio_summary' && selectedMode !== 'image';
+      if (regenMemoryEligible && regenUserTurns <= 1) {
         const memoryDigest = buildCrossSessionMemory(sessionIdRef.current);
         if (memoryDigest) {
           apiMessages.unshift({ role: 'user', text: memoryDigest });
@@ -2693,6 +2708,11 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                           <span className="text-[10px] text-emerald-300/80">
                             {isAr ? 'تحليل المحتوى وهندسة النبرة الصوتية الواقعية' : 'Analyzing content & generating natural human voice'}
                           </span>
+                          {slowAudioHint && (
+                            <span className="text-[10px] text-amber-300/90 font-medium mt-0.5">
+                              {isAr ? '⏳ المعالجة ممكن تاخد من دقيقة لتلات دقايق في أوقات الضغط العالي — ميزتك بتحفظ عادي' : '⏳ Processing may take 1–3 minutes under heavy load — your quota is safe'}
+                            </span>
+                          )}
                         </div>
                       </div>
 

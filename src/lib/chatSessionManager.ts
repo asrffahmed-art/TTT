@@ -152,11 +152,11 @@ function isSessionWithinOneYear(session: ChatSession): boolean {
   return (Date.now() - time) <= ONE_YEAR_MS;
 }
 
-// Get all cached sessions strictly for current user (guests included —
-// their session list lives under the shared 'thoth_guest_sessions' key so
-// past conversations stay visible and reopenable without an account)
+// Get all cached sessions strictly for current user (guests NEVER have a
+// session list — the owner's rule: zero storage/saving for guests)
 export function getCachedSessions(): ChatSession[] {
   const userId = getEffectiveUserId();
+  if (!userId) return []; // Guests: no storage at all
 
   try {
     const raw = localStorage.getItem(getSessionsStorageKey(userId));
@@ -173,25 +173,29 @@ export function getCachedSessions(): ChatSession[] {
   return [];
 }
 
+// Remove any legacy guest storage left by earlier builds (no guest storage
+// allowed at all). Cheap no-op when nothing exists.
+export function purgeGuestStorage(): void {
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('thoth_guest_msgs_') || k === 'thoth_guest_sessions')) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+  } catch (e) {}
+}
+
 // Fetch all sessions strictly for current logged-in user
 export async function loadAllSessions(): Promise<ChatSession[]> {
   const userId = getEffectiveUserId();
 
-  // GUESTS: local-only session list (no server account to sync with).
-  // Past conversations stay saved on-device and visible in the sidebar.
+  // GUESTS: Completely disable history loading & saving (zero storage rule)
   if (!userId) {
-    const deletedSet = getDeletedSessionsSet(null);
-    const guestList = getCachedSessions().filter(s => !deletedSet.has(s.id));
-    guestList.sort((a, b) => {
-      if (a.isPinned && !b.isPinned) return -1;
-      if (!a.isPinned && b.isPinned) return 1;
-      const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
-      const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
-      return timeB - timeA;
-    });
-    localStorage.setItem(getSessionsStorageKey(null), JSON.stringify(guestList));
-    window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: guestList } }));
-    return guestList;
+    purgeGuestStorage();
+    return [];
   }
 
   const deletedSet = getDeletedSessionsSet(userId);
@@ -285,8 +289,9 @@ export function getLocalSessionMessagesSync(sessionId: string): ChatMessage[] {
   if (!sessionId) return [];
   const userId = getEffectiveUserId();
 
-  // Guests get persistent local memory too (localStorage-backed), so the
-  // conversation survives page refreshes and the model keeps its context.
+  // GUESTS: zero storage — no local conversation memory at all
+  if (!userId) return [];
+
   const deletedSet = getDeletedSessionsSet(userId);
   if (deletedSet.has(sessionId)) return [];
 
@@ -311,9 +316,7 @@ export async function loadSessionMessages(sessionId: string): Promise<ChatMessag
   const cacheKey = getSessionMsgsStorageKey(userId, sessionId);
   let messages: ChatMessage[] = [];
 
-  // 1. Try local cache first (works for signed-in users AND guests —
-  //    guests keep their conversation memory in localStorage so the model
-  //    still remembers the chat after a page refresh)
+  // 1. Try local cache first (signed-in users only — guests have zero storage)
   try {
     const raw = localStorage.getItem(cacheKey);
     if (raw) {
@@ -324,9 +327,9 @@ export async function loadSessionMessages(sessionId: string): Promise<ChatMessag
     }
   } catch (e) {}
 
-  // 2. Guests: local-only persistent memory (no server account to sync with)
+  // 2. Guests: zero storage — nothing to load, ever
   if (!userId) {
-    return messages.map(normalizeMessageImages);
+    return [];
   }
 
   const deletedSet = getDeletedSessionsSet(userId);
@@ -355,6 +358,9 @@ export function saveLocalSessionMessages(sessionId: string, messages: ChatMessag
   const userId = getEffectiveUserId();
   if (!sessionId) return;
 
+  // GUESTS: zero storage — never persist conversation content
+  if (!userId) return;
+
   const deletedSet = getDeletedSessionsSet(userId);
   if (deletedSet.has(sessionId)) return;
 
@@ -364,19 +370,10 @@ export function saveLocalSessionMessages(sessionId: string, messages: ChatMessag
 
   const cacheKey = getSessionMsgsStorageKey(userId, sessionId);
   try {
-    // Cap stored history to protect localStorage quota (guests have no server
-    // backup, so they rely entirely on this cache for conversation memory).
+    // Cap stored history to protect localStorage quota
     const capped = messages.length > 80 ? messages.slice(-80) : messages;
     localStorage.setItem(cacheKey, JSON.stringify(capped));
-  } catch (e) {
-    // Quota exceeded → keep at least the most recent half for guests
-    if (!userId) {
-      try {
-        const half = messages.slice(-Math.max(1, Math.floor(messages.length / 2)));
-        localStorage.setItem(cacheKey, JSON.stringify(half));
-      } catch (e2) {}
-    }
-  }
+  } catch (e) {}
 }
 
 // Create a new session for current user
@@ -402,32 +399,10 @@ export function createNewSession(customTitle?: string): ChatSession {
     setActiveSessionId(newId);
     window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: updatedList } }));
   } else {
-    // For Guests: register the new session in the on-device list (so past
-    // conversations stay visible and reopenable), and prune old guest
-    // message caches so localStorage never grows unbounded (keep newest 5).
+    // For Guests: ZERO storage — no session list, no message caches.
+    // Just move the active pointer and clear any legacy guest caches.
     try {
-      const guestList = getCachedSessions().filter(s => s.id !== newId);
-      guestList.unshift(newSession);
-      localStorage.setItem(getSessionsStorageKey(null), JSON.stringify(guestList));
-
-      const guestKeys: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith('thoth_guest_msgs_')) guestKeys.push(k);
-      }
-      const keyTime = (k: string) => {
-        const m = k.match(/(\d+)/);
-        return m ? Number(m[1]) : 0;
-      };
-      guestKeys.sort((a, b) => keyTime(b) - keyTime(a));
-      guestKeys.slice(5).forEach(k => {
-        if (k !== `thoth_guest_msgs_${newId}`) localStorage.removeItem(k);
-      });
-      const survivingIds = new Set(guestKeys.slice(0, 5).map(k => k.replace('thoth_guest_msgs_', '')));
-      survivingIds.add(newId);
-      const prunedGuestList = guestList.filter(s => survivingIds.has(s.id));
-      localStorage.setItem(getSessionsStorageKey(null), JSON.stringify(prunedGuestList));
-      window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: prunedGuestList } }));
+      purgeGuestStorage();
     } catch (e) {}
     localStorage.setItem(getActiveChatStorageKey(null), newId);
   }
@@ -443,9 +418,9 @@ export async function touchSession(
   mediaInfo?: { mediaUrl?: string; mediaType?: string; isVideo?: boolean; thumbnailUrl?: string }
 ): Promise<void> {
   const userId = getEffectiveUserId();
-  // GUESTS: update the on-device session list only (everything below is
-  // localStorage-based; there is no server write in this function), so past
-  // conversations stay visible in the sidebar without an account.
+  // GUESTS: NEVER save or touch sessions (zero storage rule)
+  if (!userId) return;
+
   const deletedSet = getDeletedSessionsSet(userId);
   if (deletedSet.has(sessionId)) return;
 
@@ -622,22 +597,16 @@ export async function clearAllSessions(): Promise<void> {
   window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: [newS] } }));
 }
 
-// Cleanup function on logout / guest page load to switch the visible session
-// list to the guest's own on-device one
+// Cleanup function on logout / guest page load: reset the visible session
+// list and keep the stable guest session pointer (UI state only)
 export function handleUserLogoutCleanup(): void {
-  // Broadcast the GUEST's actual local session list instead of an empty one.
-  // An empty broadcast used to wipe the freshly-loaded guest sidebar list on
-  // every page load (the last writer won), making it look like "guests save
-  // nothing". getEffectiveUserId() is already null at this point, so
-  // getCachedSessions() reads the guest list ('thoth_guest_sessions').
-  // Guests with no sessions yet simply broadcast an empty list as before.
-  window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: getCachedSessions() } }));
+  // GUESTS: zero storage — clear any legacy guest caches left by old builds
+  purgeGuestStorage();
+  window.dispatchEvent(new CustomEvent('thoth_sessions_list_updated', { detail: { sessions: [] } }));
   // IMPORTANT: reuse the SAME persisted guest session id instead of minting a
   // fresh guest_<timestamp> one. A new id on every auth-resolve made each page
-  // load look like a brand-new conversation: the guest's saved messages were
-  // orphaned and the model lost all context. getActiveSessionId() persists
-  // thoth_guest_active_session, so the identity (and its localStorage cache)
-  // stays stable across reloads.
+  // load look like a brand-new conversation and glitched the UI. The pointer
+  // is pure UI state — no conversation content is ever stored for guests.
   window.dispatchEvent(new CustomEvent('thoth_active_session_changed', { detail: { sessionId: getActiveSessionId() } }));
 }
 
@@ -662,6 +631,10 @@ const MEMORY_MAX_TOTAL_CHARS = 6000;
 
 export function buildCrossSessionMemory(currentSessionId: string): string | null {
   try {
+    // REGISTERED USERS ONLY — the owner's rule: guests get zero storage and
+    // therefore zero cross-conversation memory.
+    if (!getEffectiveUserId()) return null;
+
     const sessions = getCachedSessions()
       .filter(s => s && s.id && s.id !== currentSessionId)
       .slice(0, MEMORY_MAX_SESSIONS + 3); // small buffer before filtering

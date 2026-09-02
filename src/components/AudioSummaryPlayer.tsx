@@ -8,7 +8,7 @@ interface AudioSummaryPlayerProps {
   duration?: number | string;
   voiceName?: string;
   script?: string;
-  status?: 'generating' | 'ready' | 'error' | 'limit_reached';
+  status?: 'generating' | 'ready' | 'error' | 'limit_reached' | 'login_required';
   sourceType?: 'pdf' | 'youtube' | 'image' | 'audio' | 'document' | 'text';
   onRetry?: () => void;
 }
@@ -272,6 +272,27 @@ export function AudioSummaryPlayer({
             <div className="font-bold text-amber-200 text-xs">الحد اليومي للملخصات الصوتية</div>
             <p className="text-amber-300/80 text-[11px] mt-1 leading-relaxed">
               الرصيد بيتجدد تلقائياً منتصف الليل بتوقيت القاهرة 🕛، أو يمكنك الترقية لملخصات صوتية غير محدودة.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // State 2.5: Login required (server sends this for guests — must render an
+  // info card, NOT fall through to the dead player UI with a play button that
+  // does nothing: audioUrl & script are both absent in this state)
+  if (status === 'login_required') {
+    return (
+      <div className="my-3 w-full max-w-xl rounded-2xl bg-indigo-500/10 backdrop-blur-xl border border-indigo-500/25 p-3.5 shadow-lg select-none" dir="rtl">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-300 shrink-0 mt-0.5 border border-indigo-500/30">
+            <Headphones className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0 text-xs">
+            <div className="font-bold text-indigo-200 text-xs">الملخص الصوتي متاح للأعضاء المسجلين فقط</div>
+            <p className="text-indigo-300/80 text-[11px] mt-1 leading-relaxed">
+              سجّل دخولك أو أنشئ حساباً مجانياً للاستمتاع بالملخصات الصوتية والبودكاست الذكي 🎙️
             </p>
           </div>
         </div>
