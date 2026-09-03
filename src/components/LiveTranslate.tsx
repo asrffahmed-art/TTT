@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Languages, ArrowLeftRight, Volume2, Copy, Check, Mic, MicOff, Sparkles, RefreshCw, BookOpen, MessageSquare, X, ChevronDown } from 'lucide-react';
+import { Languages, ArrowLeftRight, Volume2, Copy, Check, Mic, MicOff, Sparkles, RefreshCw, BookOpen, MessageSquare, X, ChevronDown, Radio } from 'lucide-react';
 import { auth } from '../lib/firebase';
 import { useAppTheme } from '../lib/themeService';
 import { useLanguage } from '../lib/LanguageContext';
@@ -114,6 +114,15 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
   const [isRecording, setIsRecording] = useState(false);
   const [isLiveActive, setIsLiveActive] = useState(false);
   const [liveStatusText, setLiveStatusText] = useState('');
+
+  // [VOICE SPLIT] plain dictation (mic button) is now separate from the LIVE
+  // voice translation session (its own dedicated button below the selectors).
+  const [isDictating, setIsDictating] = useState(false);
+  const [dictHint, setDictHint] = useState<string | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [needAudioUnlock, setNeedAudioUnlock] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const dictActiveRef = useRef(false);
 
   // Call engine: transport + AudioWorklet capture + jitter-buffered playback,
   // generation-guarded teardown (shared with the whole platform)
@@ -297,6 +306,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
     setIsRecording(false);
     setIsLiveActive(false);
     setLiveStatusText('');
+    setNeedAudioUnlock(false);
     // Engine.stop() sends {type:'stop'}, closes the socket, tears down the mic
     // and playback graphs, and suspends the output context — guaranteed
     // instant silence when the session ends.
@@ -322,13 +332,30 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
     return engineRef.current;
   };
 
+  // Friendly mic failure text — every failure used to be SILENT (owner: live
+  // translate "doesn't work well on mobile" with zero feedback).
+  const friendlyMicError = (err: any): string => {
+    const n = String(err?.name || err?.message || '');
+    if (n.includes('NotAllowedError') || n.includes('SecurityError') || n.toLowerCase().includes('denied')) {
+      return isAr
+        ? 'اتمنع إذن الميكروفون — فعّله من إعدادات المتصفح (أيقونة القفل في شريط العنوان) وجرب تاني.'
+        : 'Microphone permission denied — enable it in browser settings and retry.';
+    }
+    if (n.includes('NotFoundError') || n.includes('DevicesNotFoundError')) {
+      return isAr ? 'مفيش ميكروفون متوصل بالجهاز.' : 'No microphone found on this device.';
+    }
+    return isAr ? 'تعذر تشغيل الميكروفون للترجمة الحية.' : 'Could not start the microphone for live translation.';
+  };
+
   const handleLiveMessage = (msg: any) => {
     if (!sessionActiveRef.current) return;
     if (msg.type === 'live_ready') {
+      setLiveError(null);
       setIsLiveActive(true);
       setLiveStatusText(isAr ? 'تحدث الآن، الترجمة الحية نشطة...' : 'Speak now, live translation active...');
       engineRef.current?.startCapture().catch((err) => {
         console.warn('Microphone access error in Live Translate:', err);
+        setLiveError(friendlyMicError(err));
         stopLiveSession();
       });
     } else if (msg.type === 'translated_text' && msg.text) {
@@ -338,29 +365,37 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       engineRef.current?.stopPlayback();
     } else if (msg.type === 'audio' && msg.audio) {
       engineRef.current?.playPcm(msg.audio, msg.mimeType);
+      // [MOBILE UNLOCK] buffers scheduled but the output context is still
+      // suspended (iOS/PWA autoplay policy) -> surface the one-tap unlock.
+      if (engineRef.current?.isOutputSuspended()) setNeedAudioUnlock(true);
     } else if (msg.type === 'guest_limit_reached') {
       setTranslatedText(msg.message || (isAr ? 'انتهت مدة الاستخدام اليومية للترجمة الصوتية الحية.' : 'Daily live voice limit reached.'));
       stopLiveSession();
     } else if (msg.type === 'error') {
       console.error('Live translation error message:', msg.message);
+      setLiveError(msg.message || (isAr ? 'حدث خطأ في الترجمة الحية — جرب تاني.' : 'Live translation error — please retry.'));
       stopLiveSession();
     } else if (msg.type === 'ws_closed') {
       setIsLiveActive(false);
       setIsRecording(false);
+      setLiveError(isAr ? 'انقطع الاتصال المباشر — جرب تبدأ تاني.' : 'Live connection dropped — please start again.');
     }
   };
 
-  // Mic recording for Speech-to-Speech Real-time Translation via Gemini Live (Live API)
+  // LIVE voice translation session — now has its OWN dedicated button
+  // (separated from the plain mic button, which became dictation input).
   const handleVoiceInput = async () => {
     if (isRecording) {
       stopLiveSession();
       return;
     }
+    if (isDictating) stopDictation();
+
+    setLiveError(null);
+    setIsRecording(true);
+    setLiveStatusText(isAr ? 'جاري الاتصال بمحرك THOTH للترجمة الحية...' : 'Connecting to THOTH Live Translate...');
 
     try {
-      setIsRecording(true);
-      setLiveStatusText(isAr ? 'جاري الاتصال بمحرك THOTH للترجمة الحية...' : 'Connecting to THOTH Live Translate...');
-
       const targetLang = targetLangId === 'ar' ? (targetDialectId || 'ar_msa') : targetLangId;
       const currentUser = auth.currentUser;
       const userId = currentUser ? currentUser.uid : '';
@@ -368,18 +403,117 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
 
       sessionActiveRef.current = true;
       const engine = ensureEngine();
+      // [MOBILE UNLOCK] open speaker + mic audio contexts inside the tap
+      // gesture — on phones they stay suspended forever when created later
+      // from WS callbacks (same cure as the voice lessons).
+      try { engine.unlockAudio(); } catch {}
       await engine.connect(wsUrl);
       // The engine's onMessage router handles live_ready -> startCapture()
     } catch (err: any) {
       console.warn('Live translation start error:', err);
+      setLiveError(isAr
+        ? 'تعذر الاتصال بخدمة الترجمة الحية — اتأكد من اتصال الإنترنت وجرب تاني.'
+        : 'Could not reach the live translation service — check your connection and retry.');
       stopLiveSession();
     }
+  };
+
+  // Plain voice INPUT (dictation): the mic button types your speech into the
+  // source box, then the normal typing flow auto-translates it. No WS, no
+  // session — fully separate from the LIVE button above.
+  const stopDictation = () => {
+    dictActiveRef.current = false;
+    try { recognitionRef.current?.stop(); } catch {}
+    recognitionRef.current = null;
+    setIsDictating(false);
+  };
+
+  const startDictation = () => {
+    if (isDictating) { stopDictation(); return; }
+    if (isRecording) { stopLiveSession(); return; }
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      setDictHint(isAr
+        ? 'الإدخال الصوتي غير مدعوم في هذا المتصفح — استخدم زر «الترجمة الصوتية المباشرة» بالأسفل.'
+        : 'Voice input is not supported in this browser — use the Live Voice Translation button below.');
+      setTimeout(() => setDictHint(null), 6000);
+      return;
+    }
+    try {
+      const rec = new SR();
+      recognitionRef.current = rec;
+      dictActiveRef.current = true;
+      rec.lang = getLangBcp47(sourceLangId, sourceDialectId);
+      rec.continuous = true;
+      rec.interimResults = false; // final phrases only -> no duplicate text
+      rec.onstart = () => setIsDictating(true);
+      rec.onresult = (e: any) => {
+        let finalTxt = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) finalTxt += e.results[i][0].transcript;
+        }
+        if (finalTxt.trim()) setSourceText(prev => (prev ? prev + ' ' : '') + finalTxt.trim());
+      };
+      rec.onerror = (e: any) => {
+        const errName = String(e?.error || '');
+        if (errName === 'not-allowed' || errName === 'service-not-allowed') {
+          setDictHint(isAr ? 'اتمنع إذن الميكروفون — فعّله من إعدادات المتصفح وجرب تاني.' : 'Microphone permission denied — enable it in browser settings and retry.');
+        } else if (errName === 'no-speech') {
+          setDictHint(isAr ? 'مسمعكوش — قرّب من الميكروفون واتكلم.' : 'No speech heard — get closer to the mic and speak.');
+        } else if (errName === 'network') {
+          setDictHint(isAr ? 'الإدخال الصوتي محتاج إنترنت شغال.' : 'Voice input needs a working connection.');
+        }
+        setTimeout(() => setDictHint(null), 6000);
+      };
+      rec.onend = () => {
+        recognitionRef.current = null;
+        setIsDictating(false);
+      };
+      rec.start();
+    } catch (err) {
+      console.warn('Dictation start error:', err);
+      dictActiveRef.current = false;
+      recognitionRef.current = null;
+      setIsDictating(false);
+      setDictHint(isAr ? 'تعذر بدء الإدخال الصوتي — جرب تاني.' : 'Could not start voice input — please retry.');
+      setTimeout(() => setDictHint(null), 6000);
+    }
+  };
+
+  // [MOBILE UNLOCK] while a live session runs, ANY tap re-opens the suspended
+  // audio contexts (iOS/PWA autoplay policy) and auto-hides the unlock chip.
+  useEffect(() => {
+    const unlock = () => {
+      if (!sessionActiveRef.current) return;
+      try { engineRef.current?.unlockAudio(); } catch {}
+      setTimeout(() => {
+        if (engineRef.current && !engineRef.current.isOutputSuspended()) setNeedAudioUnlock(false);
+      }, 350);
+    };
+    const opts = { passive: true } as any;
+    window.addEventListener('pointerdown', unlock, opts);
+    window.addEventListener('touchend', unlock, opts);
+    const onVis = () => { if (!document.hidden) unlock(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('touchend', unlock);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
+  const unlockLiveAudio = () => {
+    try { engineRef.current?.unlockAudio(); } catch {}
+    setTimeout(() => {
+      if (engineRef.current && !engineRef.current.isOutputSuspended()) setNeedAudioUnlock(false);
+    }, 350);
   };
 
 
 
   useEffect(() => {
     return () => {
+      stopDictation();
       stopLiveSession();
     };
   }, []);
@@ -400,7 +534,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
 
   return (
     <div 
-      className="flex flex-col w-full h-full pb-28 pt-4 px-3 sm:px-6 md:px-8 max-w-4xl mx-auto overflow-y-auto hide-scrollbar"
+      className="flex flex-col w-full h-full pb-28 pt-20 px-3 sm:px-6 md:px-8 max-w-4xl mx-auto overflow-y-auto hide-scrollbar"
       dir={isAr ? 'rtl' : 'ltr'}
     >
       
@@ -594,14 +728,62 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
               {liveStatusText || (isAr ? 'الترجمة الصوتية الحية نشطة (THOTH Live Translate)' : 'Live voice translation active (THOTH Live Translate)')}
             </span>
           </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {needAudioUnlock && (
+              <button
+                onClick={unlockLiveAudio}
+                className="px-3 py-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all shadow-sm animate-bounce"
+              >
+                {isAr ? 'فعّل الصوت 🔊' : 'Enable audio 🔊'}
+              </button>
+            )}
+            <button
+              onClick={stopLiveSession}
+              className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded-xl text-xs font-bold transition-all shadow-sm"
+            >
+              {isAr ? 'إيقاف' : 'Stop'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Live session error — always visible now (was silent before) */}
+      {liveError && !isRecording && (
+        <div className="mb-4 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
+          <span className="text-xs font-bold text-amber-200 leading-relaxed">{liveError}</span>
           <button
-            onClick={stopLiveSession}
-            className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded-xl text-xs font-bold transition-all shadow-sm"
+            onClick={() => setLiveError(null)}
+            className="shrink-0 px-3 py-1 bg-white/10 hover:bg-white/20 text-white/80 rounded-xl text-xs font-bold transition-all"
           >
-            {isAr ? 'إيقاف' : 'Stop'}
+            {isAr ? 'حسناً' : 'OK'}
           </button>
         </div>
       )}
+
+      {/* [VOICE SPLIT] Dedicated LIVE voice translation button — its own big
+          tap target, fully separate from the plain mic (dictation) button in
+          the source box header. */}
+      <button
+        onClick={handleVoiceInput}
+        className={`mb-4 w-full py-3.5 px-4 rounded-2xl flex items-center justify-center gap-2.5 font-black text-sm transition-all shadow-lg active:scale-[0.98] border ${
+          isRecording
+            ? 'bg-red-500/15 border-red-500/40 text-red-200 hover:bg-red-500/25'
+            : `bg-gradient-to-r ${theme.previewGradient} ${theme.borderAccent} text-white hover:brightness-110`
+        }`}
+      >
+        {isRecording ? (
+          <>
+            <span className="w-2.5 h-2.5 rounded-full bg-red-400 animate-ping" />
+            <Radio className="w-5 h-5" />
+            <span>{isAr ? 'إنهاء الترجمة الصوتية المباشرة' : 'End Live Voice Translation'}</span>
+          </>
+        ) : (
+          <>
+            <Radio className={`w-5 h-5 ${theme.textAccentBright}`} />
+            <span>{isAr ? 'الترجمة الصوتية المباشرة — اضغط واتكلم' : 'Live Voice Translation — tap and speak'}</span>
+          </>
+        )}
+      </button>
 
       {/* Main Dual Box Layout */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -614,13 +796,13 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
             </span>
             <div className="flex items-center gap-1.5">
               <button
-                onClick={handleVoiceInput}
+                onClick={startDictation}
                 className={`p-2 rounded-xl transition-all ${
-                  isRecording ? 'bg-red-500 text-white animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'bg-white/5 text-white/70 hover:text-white hover:bg-white/10'
+                  isDictating ? 'bg-red-500 text-white animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'bg-white/5 text-white/70 hover:text-white hover:bg-white/10'
                 }`}
-                title={isAr ? 'تحدث للإدخال الصوتي' : 'Voice Input'}
+                title={isAr ? 'إدخال صوتي — اتكلم وهو يكتب كلامك في الصندوق' : 'Voice input — speak and it types into the box'}
               >
-                {isRecording ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                {isDictating ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
               </button>
               {sourceText && (
                 <button
@@ -633,6 +815,9 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
               )}
             </div>
           </div>
+          {dictHint && (
+            <p className="mb-2 text-[11px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-1.5 leading-relaxed">{dictHint}</p>
+          )}
           <textarea
             value={sourceText}
             onChange={(e) => setSourceText(e.target.value)}
