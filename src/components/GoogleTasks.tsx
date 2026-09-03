@@ -3,8 +3,9 @@ import { useState, useEffect } from 'react';
 import { 
   CheckCircle2, Circle, Plus, Trash2, Calendar, RefreshCw, 
   ListTodo, Check, Sparkles, Filter, AlertCircle, ChevronDown, 
-  ExternalLink, LogIn, Edit2
+  ExternalLink, LogIn, Edit2, AlarmClock, CalendarDays
 } from 'lucide-react';
+import { AlarmsView, CalendarView } from './StudyTools';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from 'firebase/auth';
 import { collection, getDocs, setDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
 import { auth, googleProvider, db, cleanObject } from '../lib/firebase';
@@ -34,6 +35,11 @@ export function GoogleTasks({ onAction }: GoogleTasksProps) {
   const { t, language } = useLanguage();
   const isAr = language === 'ar';
   const theme = useAppTheme();
+
+  // Unified hub (owner directive): tasks + study tools (alarms & calendar)
+  // merged into ONE page with three sections. Study tools stay 100% local
+  // (localStorage) while tasks keep their existing local/cloud sync.
+  const [section, setSection] = useState<'tasks' | 'alarms' | 'calendar'>('tasks');
   const [taskLists, setTaskLists] = useState<TaskList[]>([
     { id: 'default', title: isAr ? 'مهامي الرئيسية' : 'My Main Tasks' }
   ]);
@@ -469,7 +475,7 @@ export function GoogleTasks({ onAction }: GoogleTasksProps) {
     >
       
       {/* Top Header */}
-      <div className="flex items-center justify-between mb-8 shrink-0">
+      <div className="flex items-center justify-between mb-4 shrink-0">
         <div className="flex items-center gap-3">
           <div className={`w-10 h-10 rounded-xl bg-gradient-to-tr ${theme.previewGradient} p-0.5 shadow-lg`}>
             <div className={`w-full h-full bg-[#141824] rounded-[10px] flex items-center justify-center`}>
@@ -478,36 +484,73 @@ export function GoogleTasks({ onAction }: GoogleTasksProps) {
           </div>
           <div>
             <h1 className="text-xl font-black text-white flex items-center gap-3">
-              <span>{isAr ? 'المهام' : 'Tasks'}</span>
+              <span>{isAr ? 'المهام والدراسة' : 'Tasks & Study'}</span>
               <span className={`text-[10px] ${theme.bgAccent} ${theme.textAccentBright} px-2 py-0.5 rounded-full border ${theme.borderAccent} font-mono font-bold`}>
                 THOTH
               </span>
             </h1>
+            <p className="text-[11px] text-white/40 mt-0.5">
+              {isAr ? 'مهامك ومنبهك وتقويم دراستك في مكان واحد' : 'Your tasks, alarms and study calendar in one place'}
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {!accessToken ? (
-            <button
-              onClick={handleGoogleConnect}
-              disabled={isLoading}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl ${theme.btnPrimary} text-xs font-bold transition-all shadow-lg active:scale-95 disabled:opacity-50`}
-            >
-              <LogIn className="w-4 h-4" />
-              <span>{isAr ? 'مزامنة المهام' : 'Sync Tasks'}</span>
-            </button>
-          ) : (
-            <button
-              onClick={() => fetchGoogleTaskLists(accessToken)}
-              disabled={isSyncing}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl ${theme.bgAccent} border ${theme.borderAccent} ${theme.textAccentBright} text-xs font-bold transition-all active:scale-95 shadow-md`}
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? `animate-spin ${theme.textAccent}` : ''}`} />
-              <span>{isAr ? 'تحديث المهام' : 'Refresh Tasks'}</span>
-            </button>
-          )}
-        </div>
+        {section === 'tasks' && (
+          <div className="flex items-center gap-2">
+            {!accessToken ? (
+              <button
+                onClick={handleGoogleConnect}
+                disabled={isLoading}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl ${theme.btnPrimary} text-xs font-bold transition-all shadow-lg active:scale-95 disabled:opacity-50`}
+              >
+                <LogIn className="w-4 h-4" />
+                <span>{isAr ? 'مزامنة المهام' : 'Sync Tasks'}</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => fetchGoogleTaskLists(accessToken)}
+                disabled={isSyncing}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl ${theme.bgAccent} border ${theme.borderAccent} ${theme.textAccentBright} text-xs font-bold transition-all active:scale-95 shadow-md`}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? `animate-spin ${theme.textAccent}` : ''}`} />
+                <span>{isAr ? 'تحديث المهام' : 'Refresh Tasks'}</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Hub sections: المهام | المنبه | التقويم */}
+      <div className="flex gap-2 mb-5 shrink-0">
+        <button
+          onClick={() => setSection('tasks')}
+          className={`flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${section === 'tasks' ? theme.activeTabClass : 'bg-white/5 text-white/50 border border-white/10 hover:bg-white/10'}`}
+        >
+          <ListTodo className="w-4 h-4" />
+          <span>{isAr ? 'المهام' : 'Tasks'}</span>
+        </button>
+        <button
+          onClick={() => setSection('alarms')}
+          className={`flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${section === 'alarms' ? theme.activeTabClass : 'bg-white/5 text-white/50 border border-white/10 hover:bg-white/10'}`}
+        >
+          <AlarmClock className="w-4 h-4" />
+          <span>{isAr ? 'المنبه' : 'Alarms'}</span>
+        </button>
+        <button
+          onClick={() => setSection('calendar')}
+          className={`flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${section === 'calendar' ? theme.activeTabClass : 'bg-white/5 text-white/50 border border-white/10 hover:bg-white/10'}`}
+        >
+          <CalendarDays className="w-4 h-4" />
+          <span>{isAr ? 'التقويم' : 'Calendar'}</span>
+        </button>
+      </div>
+
+      {section === 'alarms' && <AlarmsView />}
+
+      {section === 'calendar' && <CalendarView tasks={tasks} onToggleTask={handleToggleTask} />}
+
+      {section === 'tasks' && (<>
+
 
       {/* Status banner */}
       {statusMessage && (
@@ -727,6 +770,7 @@ export function GoogleTasks({ onAction }: GoogleTasksProps) {
           ))
         )}
       </div>
+      </>)}
 
       {/* Mandatory User Confirmation Dialog Modal */}
       {confirmModal.isOpen && (
