@@ -13,6 +13,7 @@
 // applyStudyToolCommands() executes them into the local store.
 
 import { getEffectiveUserId } from './chatSessionManager';
+import { auth, db, cleanObject } from './firebase';
 
 export interface StudyReminder {
   id: string;
@@ -38,6 +39,7 @@ export interface StudyToolCommands {
   cleanText: string;
   reminders: { title: string; date: string; time: string; repeat: 'once' | 'daily' | 'weekly' }[];
   events: { title: string; date: string; time?: string; note?: string }[];
+  tasks: { title: string; date: string; time?: string; notes?: string }[];
 }
 
 const REMINDERS_KEY = (uid: string) => `thoth_study_reminders_${uid}`;
@@ -151,6 +153,62 @@ export function deleteEvent(id: string) {
 
 export function getEventsForDate(date: string): StudyEvent[] {
   return getEvents().filter(e => e.date === date);
+}
+
+// ---- AI-created tasks (study plans) ----
+// Tasks are the Tasks-page domain, so they use the EXACT same storage key,
+// id scheme, document shape and Firestore path GoogleTasks itself uses
+// (app-google-tasks-<uid> + users/<uid>/tasks/<id> for signed-in users).
+// A window event lets the mounted Tasks page reload instantly (guests rely
+// on it; signed-in users also get the onSnapshot update from Firestore).
+
+export const THOTH_TASKS_UPDATED_EVENT = 'thoth_tasks_updated';
+
+export function addAiTask(input: { title: string; date: string; time?: string; notes?: string }): { ok: boolean; duplicate?: boolean } {
+  const title = (input.title || '').toString().trim().slice(0, 160);
+  const date = normalizeDate(input.date || '');
+  if (!title || !date) return { ok: false };
+  const time = normalizeTime(input.time || '');
+  const notes = (input.notes || '').toString().trim().slice(0, 300);
+
+  const key = `app-google-tasks-${ownerKey()}`;
+  const list = readList<any>(key);
+
+  // Duplicate guard: same title on the same due date (not completed)
+  const dup = list.some(t => t && t.title === title && (t.due || '').slice(0, 10) === date && t.status !== 'completed');
+  if (dup) return { ok: true, duplicate: true };
+
+  const noteBits: string[] = [];
+  if (time) noteBits.push(`⏰ ${time}`);
+  if (notes) noteBits.push(notes);
+
+  const task: any = {
+    id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    title,
+    notes: noteBits.join(' — ') || undefined,
+    status: 'needsAction',
+    // Same convention as the Add-Task form: date-only input -> UTC midnight ISO;
+    // the calendar reads slice(0,10) so the day stays exactly what was chosen.
+    due: `${date}T00:00:00.000Z`,
+    listId: 'default'
+  };
+
+  list.unshift(task);
+  writeList(key, list);
+
+  // Cloud mirror for signed-in users (same doc shape/path as GoogleTasks) —
+  // fire-and-forget: the local copy is already the source of truth here.
+  try {
+    const user = auth.currentUser;
+    if (user && user.uid === ownerKey()) {
+      import('firebase/firestore').then(({ doc, setDoc }) =>
+        setDoc(doc(db, 'users', user.uid, 'tasks', task.id), cleanObject(task))
+      ).catch(() => { /* offline — local copy remains */ });
+    }
+  } catch { /* never block the chat flow on cloud errors */ }
+
+  try { window.dispatchEvent(new CustomEvent(THOTH_TASKS_UPDATED_EVENT)); } catch { /* noop */ }
+  return { ok: true };
 }
 
 // ---- normalization helpers ----
@@ -290,6 +348,12 @@ export function playReminderChime() {
 
 const REMINDER_TAG_RE = /\[\[THOTH_REMINDER::(\{[\s\S]*?\})\]\]/g;
 const EVENT_TAG_RE = /\[\[THOTH_EVENT::(\{[\s\S]*?\})\]\]/g;
+const TASK_TAG_RE = /\[\[THOTH_TASK::(\{[\s\S]*?\})\]\]/g;
+
+// Runaway guards — a plan reply can carry several tags, but never unbounded.
+const MAX_REMINDERS_PER_REPLY = 8;
+const MAX_EVENTS_PER_REPLY = 12;
+const MAX_TASKS_PER_REPLY = 14;
 
 function safeParse(raw: string): any | null {
   try {
@@ -304,8 +368,10 @@ export function extractStudyToolCommands(text: string): StudyToolCommands {
   const src = (text || '').toString();
   const reminders: StudyToolCommands['reminders'] = [];
   const events: StudyToolCommands['events'] = [];
+  const tasks: StudyToolCommands['tasks'] = [];
 
   let clean = src.replace(REMINDER_TAG_RE, (_all, raw) => {
+    if (reminders.length >= MAX_REMINDERS_PER_REPLY) return '';
     const o = safeParse(raw);
     if (o && o.title) {
       const repeat = ['daily', 'weekly'].includes(String(o.repeat)) ? String(o.repeat) : 'once';
@@ -317,6 +383,7 @@ export function extractStudyToolCommands(text: string): StudyToolCommands {
   });
 
   clean = clean.replace(EVENT_TAG_RE, (_all, raw) => {
+    if (events.length >= MAX_EVENTS_PER_REPLY) return '';
     const o = safeParse(raw);
     if (o && o.title) {
       const date = normalizeDate(o.date || '');
@@ -326,8 +393,23 @@ export function extractStudyToolCommands(text: string): StudyToolCommands {
     return '';
   });
 
+  clean = clean.replace(TASK_TAG_RE, (_all, raw) => {
+    if (tasks.length >= MAX_TASKS_PER_REPLY) return '';
+    const o = safeParse(raw);
+    if (o && o.title) {
+      const date = normalizeDate(o.date || '');
+      if (date) tasks.push({
+        title: String(o.title).slice(0, 160),
+        date,
+        time: normalizeTime(o.time || '') || undefined,
+        notes: o.notes ? String(o.notes).slice(0, 300) : undefined
+      });
+    }
+    return '';
+  });
+
   clean = clean.replace(/\n{3,}/g, '\n\n').trim();
-  return { cleanText: clean, reminders, events };
+  return { cleanText: clean, reminders, events, tasks };
 }
 
 /** Executes validated commands into the LOCAL store; returns chat confirmation lines. */
@@ -351,6 +433,32 @@ export function applyStudyToolCommands(cmds: StudyToolCommands, isAr: boolean): 
     lines.push(isAr
       ? `📅 **تمت إضافة حدث للتقويم${res.duplicate ? ' (موجود بالفعل)' : ''}:** «${e.title}»${when}`
       : `📅 **Event added to calendar${res.duplicate ? ' (already exists)' : ''}:** "${e.title}"${when}`);
+  }
+
+  // Tasks: single → detailed line; a plan (multiple) → one compact summary so
+  // the chat isn't spammed with 10 lines after a study plan.
+  if (cmds.tasks.length === 1) {
+    const t = cmds.tasks[0];
+    const res = addAiTask(t);
+    if (res.ok) {
+      const when = isAr ? ` يوم ${t.date}${t.time ? ` الساعة ${t.time}` : ''}` : ` on ${t.date}${t.time ? ` at ${t.time}` : ''}`;
+      lines.push(isAr
+        ? `📋 **تمت إضافة المهمة لقائمة مهامك${res.duplicate ? ' (موجودة بالفعل)' : ''}:** ${t.title}${when}`
+        : `📋 **Task added to your list${res.duplicate ? ' (already exists)' : ''}:** ${t.title}${when}`);
+    }
+  } else if (cmds.tasks.length > 1) {
+    let added = 0;
+    let dups = 0;
+    for (const t of cmds.tasks) {
+      const res = addAiTask(t);
+      if (res.ok) { if (res.duplicate) dups++; else added++; }
+    }
+    if (added > 0 || dups > 0) {
+      const dupNote = dups > 0 ? (isAr ? ` (تخطيت ${dups} مكررة)` : ` (skipped ${dups} duplicates)`) : '';
+      lines.push(isAr
+        ? `📋 **تمت إضافة ${added} ${isAr ? (added === 1 ? 'مهمة' : 'مهام') : added === 1 ? 'task' : 'tasks'} لخطة دراستك في صفحة المهام — بالشعارات والتواريخ والوقت**${dupNote} 🗂️`
+        : `📋 **Added ${added} ${added === 1 ? 'task' : 'tasks'} to your study plan on the Tasks page — with icons, dates and times**${dupNote} 🗂️`);
+    }
   }
 
   return lines;

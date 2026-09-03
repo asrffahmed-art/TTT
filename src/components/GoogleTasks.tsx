@@ -90,6 +90,21 @@ export function GoogleTasks({ onAction }: GoogleTasksProps) {
     localStorage.setItem(`app-google-tasks-${userId}`, JSON.stringify(tasks));
   }, [tasks]);
 
+  // [STUDY TOOLS] AI-created tasks (study plans from chat) land in the same
+  // per-user localStorage key — this event makes the open Tasks page reload
+  // instantly (signed-in users additionally get the Firestore onSnapshot).
+  useEffect(() => {
+    const refreshFromLocal = () => {
+      const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
+      const saved = localStorage.getItem(`app-google-tasks-${userId}`);
+      if (saved) {
+        try { setTasks(JSON.parse(saved)); } catch (e) { /* ignore malformed */ }
+      }
+    };
+    window.addEventListener('thoth_tasks_updated', refreshFromLocal);
+    return () => window.removeEventListener('thoth_tasks_updated', refreshFromLocal);
+  }, []);
+
   // Clean placeholder strings if any
   useEffect(() => {
     setTasks(prev => {
@@ -470,7 +485,7 @@ export function GoogleTasks({ onAction }: GoogleTasksProps) {
 
   return (
     <div 
-      className="flex flex-col w-full h-full pb-28 pt-4 px-3 sm:px-6 md:px-8 max-w-3xl mx-auto overflow-y-auto hide-scrollbar"
+      className="flex flex-col w-full h-full pb-28 pt-20 px-3 sm:px-6 md:px-8 max-w-3xl mx-auto overflow-y-auto hide-scrollbar"
       dir={isAr ? 'rtl' : 'ltr'}
     >
       
