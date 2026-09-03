@@ -212,6 +212,9 @@ export function VoiceDialog({
       setVoiceState('listening');
     } else if (msg.type === 'audio' && msg.audio) {
       engineRef.current?.playPcm(msg.audio, msg.mimeType);
+      // [MOBILE UNLOCK] if the output context is still suspended (iOS/PWA
+      // autoplay policy), surface the one-tap audio unlock button.
+      if (engineRef.current?.isOutputSuspended()) setNeedUserGesture(true);
       setVoiceState('speaking');
     } else if (msg.type === 'text' && msg.text) {
       setTranscripts(prev => {
@@ -262,6 +265,34 @@ export function VoiceDialog({
     };
   }, []);
 
+  // [MOBILE UNLOCK] iOS Safari / home-screen PWA suspend audio contexts created
+  // outside a user gesture (the tap on the Tasks "صوت" button is long gone by
+  // the time the first audio chunk arrives). ANY tap while the lesson is open
+  // now silently re-opens the speaker + mic contexts — the standard unlock
+  // pattern used by WhatsApp Web / Meet / etc. Desktop & Android: no-op.
+  useEffect(() => {
+    const unlock = () => {
+      try { engineRef.current?.unlockAudio(); } catch {}
+      setTimeout(() => {
+        if (engineRef.current && !engineRef.current.isOutputSuspended()) {
+          setNeedUserGesture(false);
+        }
+      }, 350);
+    };
+    const opts = { passive: true } as any;
+    window.addEventListener('pointerdown', unlock, opts);
+    window.addEventListener('touchend', unlock, opts);
+    window.addEventListener('keydown', unlock as any, opts);
+    const onVis = () => { if (!document.hidden) unlock(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('touchend', unlock);
+      window.removeEventListener('keydown', unlock as any);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
   const changeVoice = (voice: VoiceOption) => {
     setSelectedVoice(voice);
     setShowVoiceMenu(false);
@@ -295,6 +326,9 @@ export function VoiceDialog({
   const startConversation = async (voiceId: string = selectedVoice.id) => {
     setErrorMessage(null);
     stopSession();
+    // [MOBILE UNLOCK] best-effort pre-warm of both audio contexts while the
+    // user's tap activation may still be valid (speaker + 16 kHz mic graph).
+    try { getEngine().unlockAudio(); } catch {}
     isSessionActiveRef.current = true;
     setVoiceState('connecting');
 
@@ -336,6 +370,15 @@ export function VoiceDialog({
     } else {
       toggleMute();
     }
+  };
+
+  // [MOBILE UNLOCK] dedicated unlock tap — must NOT route through handleOrbClick
+  // (that toggles the mic once the lesson is live). Just resume the audio.
+  const handleUnlockAudio = () => {
+    const engine = engineRef.current;
+    if (!engine) { startConversation(); return; }
+    try { engine.unlockAudio(); } catch {}
+    setTimeout(() => { if (!engine.isOutputSuspended()) setNeedUserGesture(false); }, 350);
   };
 
   return (
@@ -390,11 +433,11 @@ export function VoiceDialog({
         {/* Audio Context Unlock Prompt Overlay if needed */}
         {needUserGesture && (
           <button
-            onClick={handleOrbClick}
-            className="mb-6 px-6 py-2.5 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-extrabold text-xs shadow-lg animate-bounce flex items-center gap-2"
+            onClick={handleUnlockAudio}
+            className="mb-6 px-6 py-2.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-extrabold text-xs shadow-lg animate-bounce flex items-center gap-2"
           >
             <Play className="w-4 h-4 fill-white" />
-            {isAr ? 'اضغط لتفعيل الصوت والتحدث' : 'Tap to enable audio and speak'}
+            {isAr ? 'اضغط لتفعيل صوت المعلم 🔊' : 'Tap to enable lesson audio'}
           </button>
         )}
 

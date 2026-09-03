@@ -252,21 +252,60 @@ export class LiveCallEngine {
     if (gen !== this.gen) return;
   }
 
+  // ------------------------------------------------------------- mobile unlock
+
+  /**
+   * [MOBILE UNLOCK] iOS Safari / home-screen PWAs (and some strict Android
+   * WebView environments) suspend any AudioContext created outside the
+   * user-gesture chain and refuse resume() calls made from async callbacks —
+   * the lesson would connect but the user would hear NOTHING and the model
+   * would never hear them. Call this from ANY real user tap (pointerdown /
+   * touchend / keydown) while the dialog is open: it opens the speaker output
+   * (with the silent unlock buffer) and resumes the mic input context.
+   * Idempotent and effectively free on platforms that never suspend.
+   */
+  public unlockAudio(): void {
+    try { this.ensureOutputCtx(); } catch {}
+    const ctx = this.inCtx;
+    if (ctx && ctx.state === 'suspended') {
+      try { ctx.resume().catch(() => {}); } catch {}
+    }
+  }
+
+  /**
+   * True when playback buffers are being scheduled but cannot actually be
+   * heard right now (output context exists yet is still suspended). Only
+   * meaningful AFTER playPcm ran — a missing context returns false by design
+   * so working platforms never see the unlock UI.
+   */
+  public isOutputSuspended(): boolean {
+    return !!this.outCtx && this.outCtx.state === 'suspended';
+  }
+
   private async buildCaptureGraph(gen: number, legacy: boolean): Promise<void> {
     const stream = this.micStream;
     if (!stream) return;
     this.destroyCaptureNodes();
 
+    // Reuse a pre-warmed context when one exists (mobile unlock path): on
+    // iOS Safari / home-screen PWAs a context created outside the user-gesture
+    // chain stays suspended, so unlockAudio() may have already created and
+    // resumed one during a real tap — reuse it instead of making a new
+    // suspended one after the async getUserMedia gap.
     const AudioCtxCtor = window.AudioContext || (window as any).webkitAudioContext;
-    const inCtx = new AudioCtxCtor({ sampleRate: INPUT_RATE });
+    let inCtx = this.inCtx;
+    if (!inCtx || inCtx.state === 'closed') {
+      inCtx = new AudioCtxCtor({ sampleRate: INPUT_RATE });
+      this.inCtx = inCtx;
+    }
     if (inCtx.state === 'suspended') {
       try { await inCtx.resume(); } catch {}
     }
     if (gen !== this.gen) {
       try { inCtx.close(); } catch {}
+      if (this.inCtx === inCtx) this.inCtx = null;
       return;
     }
-    this.inCtx = inCtx;
 
     const source = inCtx.createMediaStreamSource(stream);
 
