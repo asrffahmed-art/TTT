@@ -7,7 +7,7 @@ import { handleUserLogoutCleanup, loadAllSessions } from './lib/chatSessionManag
 
 import { useState, useEffect } from 'react';
 import { useLanguage } from './lib/LanguageContext';
-import { MessageSquare, Compass, History as HistoryIcon, Settings as SettingsIcon, Bookmark, GraduationCap, ListTodo, Radio, Languages, Sparkles, Bell, X } from 'lucide-react';
+import { MessageSquare, Compass, History as HistoryIcon, Settings as SettingsIcon, Bookmark, GraduationCap, ListTodo, Radio, Languages, Sparkles, Bell, X, CalendarDays } from 'lucide-react';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import { auth, db, testFirestoreConnection } from './lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
@@ -26,6 +26,8 @@ import { Auth } from './components/Auth';
 import { Navigation } from './components/Navigation';
 import { Header } from './components/Header';
 import { DailyBriefingModal } from './components/DailyBriefingModal';
+import { StudyTools } from './components/StudyTools';
+import { startStudyToolsWatcher, playReminderChime } from './lib/studyToolsService';
 import { listenToForegroundMessages, listenToBroadcastClicks, autoRequestNotificationsAfterLogin, requestNotificationPermission, getIOSNotificationSupport, logIOS } from './services/notificationService';
 import { THEMES, getStoredThemeId, setStoredTheme, useAppTheme } from './lib/themeService';
 import { adTracker } from './lib/adTrackingService';
@@ -245,6 +247,34 @@ export default function App() {
     };
   }, []);
 
+  // [STUDY TOOLS] Local alarm watcher — fires due reminders while the app is
+  // open: local chime + in-app toast (reuses foregroundToast) + a system
+  // notification when permission was already granted. 100% local: reads the
+  // user's own localStorage only; no server or Firestore involvement.
+  useEffect(() => {
+    const isArLang = language === 'ar';
+    const stopWatcher = startStudyToolsWatcher((r) => {
+      playReminderChime();
+      setForegroundToast({
+        title: isArLang
+          ? `⏰ منبه دراسي${r.repeat === 'daily' ? ' (يومي)' : r.repeat === 'weekly' ? ' (أسبوعي)' : ''}`
+          : `⏰ Study alarm${r.repeat === 'daily' ? ' (daily)' : r.repeat === 'weekly' ? ' (weekly)' : ''}`,
+        body: r.title,
+        notificationId: null,
+        isInfo: true
+      });
+      try {
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          new Notification(isArLang ? '⏰ THOTH — منبه دراسي' : '⏰ THOTH — Study alarm', {
+            body: r.title,
+            icon: '/icons/icon-192.png'
+          });
+        }
+      } catch { /* notification edge cases — toast already fired */ }
+    });
+    return stopWatcher;
+  }, [language]);
+
 
   useEffect(() => {
     testFirestoreConnection();
@@ -384,6 +414,7 @@ export default function App() {
   const tabs = [
     { id: 'chat', label: t('newChat', 'المحادثة'), icon: MessageSquare },
     { id: 'translate', label: t('liveTranslate', 'ترجمة حية'), icon: Languages },
+    { id: 'study', label: t('studyTools', 'أدوات الدراسة'), icon: CalendarDays },
     { id: 'tasks', label: t('tasks', 'المهام'), icon: ListTodo },
     { id: 'keep', label: t('keepNotes', 'الملاحظات'), icon: Bookmark },
   ];
@@ -394,6 +425,7 @@ export default function App() {
       case 'voice': return language === 'ar' ? 'المحادثة الصوتية المباشرة' : 'Live Voice Chat';
       case 'translate': return language === 'ar' ? 'الترجمة الفورية المباشرة' : 'Live Translation';
       case 'tasks': return t('tasks', 'المهام');
+      case 'study': return language === 'ar' ? 'أدوات الدراسة' : 'Study Tools';
       case 'classroom': return t('classroom', 'الفصول الدراسية');
       case 'keep': return t('keepNotes', 'الملاحظات');
       case 'history': return t('history', 'سجل المحادثات');
@@ -653,6 +685,9 @@ export default function App() {
         </div>
         <div className={activeTab === 'keep' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
           <KeepNotes onAction={handleStartAction} onModalToggle={setIsKeepModalOpen} />
+        </div>
+        <div className={activeTab === 'study' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
+          <StudyTools />
         </div>
         <div className={activeTab === 'discover' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
           <Discover onAction={handleStartAction} onNavigate={(tab) => setActiveTab(tab)} />

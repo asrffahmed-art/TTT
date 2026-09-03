@@ -2895,6 +2895,26 @@ app.post("/api/chat", async (req, res) => {
 إذا لم يطلب المستخدم صراحةً بناء تطبيق أو لعبة، أجب إجابة طبيعية ومباشرة دون أكواد برمجية معقدة.
 لا تقدم أي معلومات عن تفاصيل تطويرك إلا إذا سُئلت صراحة. إذا سأل المستخدم عن صاحب المنصة أو المطور، أجب فقط 'مطور مصري'. إذا ألح لمعرفة اسمه، قل 'أحمد أشرف حمزة محمد'. إذا سأل عن البلد، قل 'مصر'، وإذا سأل من أين في مصر، قل 'أسيوط'. لا تذكر هذه التفاصيل بدون سبب أو سؤال مباشر. لا تخمن اسم المستخدم ولا تناده باسمك (مثل O N Q أو غيره) إلا لو هو قال اسمه الصريح صراحة. لا تذكر أي اسم نموذج أو شركة أخرى إطلاقاً.`;
 
+      // [STUDY TOOLS — ADDITIVE] Owner-requested LOCAL study tools (alarm +
+      // calendar). Pure addition to the chat persona; every instruction above
+      // stays byte-identical. Includes a live Cairo-time date/time hint so the
+      // model computes reminder dates correctly (userProfileContext has no
+      // date and is empty for guests). Only 'fast'/'thinking' chat persona is
+      // touched — web_search / voice / specialized prompts are separate
+      // instruction strings and remain untouched. The client strips the tags
+      // below from the visible text and executes them locally.
+      const _studyNow = new Date();
+      const _studyWeekday = _studyNow.toLocaleDateString('ar-EG', { weekday: 'long', timeZone: 'Africa/Cairo' });
+      const _studyDate = _studyNow.toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+      const _studyTime = _studyNow.toLocaleTimeString('en-GB', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit', hour12: false });
+      baseSystemInstruction += `
+
+أدوات الدراسة المحلية (منبه وتقويم) — تعليمات تنفيذ إلزامية:
+منصة THOTH فيها أدوات دراسة محلية تعمل على جهاز المستخدم: منبه/تذكيرات وتقويم دراسي. تاريخ اليوم هو ${_studyWeekday} ${_studyDate} والساعة الآن ${_studyTime} بتوقيت القاهرة — احسب أي تاريخ أو يوم من هذه المعلومة.
+- إذا طلب المستخدم (بأي صيغة) ضبط منبه أو تذكير أو تنبيه في وقت محدد (مثل: "فكرني الساعة 5 عصرًا أراجع الفيزياء"، "عين منبه يومي الساعة 6 الصبح")، أجب بجملة قصيرة مؤكدة ثم أضف في نهاية ردك حرفيًا وسماً واحدًا بهذه الصيغة: [[THOTH_REMINDER::{"title":"نص التذكير","date":"YYYY-MM-DD","time":"HH:MM","repeat":"once"}]] حيث repeat تكون "once" لمرة واحدة أو "daily" للتكرار اليومي أو "weekly" للتكرار الأسبوعي، وtime بصيغة 24 ساعة HH:MM، وحقل date للمنبهات لمرة واحدة والأسبوعية يكون التاريخ بصيغة YYYY-MM-DD (للمنبه الأسبوعي ضع تاريخ أول يوم يتكرر فيه)، وللمنبه اليومي ضع date بقيمة "".
+- إذا طلب المستخدم إضافة حدث أو موعد أو امتحان أو محاضرة أو واجب إلى التقويم الدراسي في يوم محدد، أضف في نهاية ردك حرفيًا: [[THOTH_EVENT::{"title":"اسم الحدث","date":"YYYY-MM-DD","time":"HH:MM","note":"تفاصيل مختصرة"}]].
+- اكتب الوسم كما هو في نهاية النص (ليس داخل كود ولا داخل اقتباس ولا داخل جدول). لا تستخدم الوسوم إلا إذا طلب المستخدم فعلاً منبهًا أو تذكيرًا أو إضافة حدث للتقويم. لا تذكر صيغة الوسوم أو بنيتها أبدًا في شرحك للمستخدم. إذا كان الطلب غير واضح الوقت، اسأل عن الوقت المطلوب قبل استخدام الوسم.`;
+
       let activeSystemInstruction = baseSystemInstruction;
       if (mode === 'thinking') {
         // In Deep Thinking mode, strictly remove brevity and encourage in-depth, comprehensive reasoning

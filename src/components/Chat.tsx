@@ -26,6 +26,7 @@ import {
   buildCrossSessionMemory,
   ChatSession 
 } from '../lib/chatSessionManager';
+import { extractStudyToolCommands, applyStudyToolCommands } from '../lib/studyToolsService';
 import { compressImage, prepareVideoForUpload, formatBytes, isCompressibleImage, isCompressibleVideo } from '../lib/mediaCompression';
 import { Subscription } from './Subscription';
 import { SearchResultView } from './SearchResultView';
@@ -1257,9 +1258,19 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       const defaultNoResp = isAr ? "لا توجد استجابة." : "No response available.";
       const aiMsgText = data.text || data.message || (data.error ? defaultAiError : defaultNoResp);
 
+      // [STUDY TOOLS] The model may append machine-only tags for the LOCAL
+      // study tools (alarms/calendar) at the end of its reply. Strip them from
+      // everything the user sees/stores, then execute them into the local
+      // localStorage store and append ⏰/📅 confirmation lines to the message.
+      const studyCmds = extractStudyToolCommands(aiMsgText);
+      const studyConfirmLines = applyStudyToolCommands(studyCmds, isAr);
+      const aiFinalText = studyConfirmLines.length > 0
+        ? `${studyCmds.cleanText}\n\n${studyConfirmLines.join('\n\n')}`
+        : studyCmds.cleanText;
+
       const aiMsg: Message = {
         id: Date.now(),
-        text: aiMsgText,
+        text: aiFinalText,
         isUser: false,
         time: timeString,
         sources: data.sources,
@@ -1274,7 +1285,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       shouldSmoothScrollRef.current = true;
       setMessages(prev => [...prev, aiMsg]);
       saveMessageToFirestore(aiMsg);
-      saveChatToHistory(text, aiMsgText, {
+      saveChatToHistory(text, aiFinalText, {
         mediaUrl: mediaUrlPayload || imagePayload || videoPayload || undefined,
         mediaType: typePayload || messageTypeDetermined,
         isVideo: !!videoPayload || messageTypeDetermined === 'video',
@@ -1287,7 +1298,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         window.dispatchEvent(new CustomEvent('update-keep-note', {
           detail: {
             id: currentNoteId,
-            content: data.text
+            content: studyCmds.cleanText || data.text
           }
         }));
         
@@ -1406,9 +1417,16 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         ? new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
         : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+      // [STUDY TOOLS] Same tag stripping + local execution as handleSend.
+      const regenStudyCmds = extractStudyToolCommands(data.text || '');
+      const regenConfirmLines = applyStudyToolCommands(regenStudyCmds, isAr);
+      const regenFinalText = regenConfirmLines.length > 0
+        ? `${regenStudyCmds.cleanText}\n\n${regenConfirmLines.join('\n\n')}`
+        : regenStudyCmds.cleanText;
+
       const newMsg: Message = {
         id: Date.now(),
-        text: data.text,
+        text: regenFinalText,
         isUser: false,
         time: timeString,
         sources: data.sources,
