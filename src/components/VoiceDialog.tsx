@@ -26,10 +26,14 @@ export const GEMINI_MODEL_VOICES: VoiceOption[] = [
 
 export function VoiceDialog({ 
   onClose, 
-  onOpenAuth 
+  onOpenAuth,
+  teachTopic
 }: { 
   onClose: () => void; 
   onOpenAuth?: () => void;
+  // [STUDY TOOLS] when set, the server switches this voice session into a
+  // focused voice TUTOR for this topic only (Tasks page "learn with voice")
+  teachTopic?: string;
 }) {
   const { language } = useLanguage();
   const isAr = language === 'ar';
@@ -256,7 +260,7 @@ export function VoiceDialog({
     try {
       const userId = localStorage.getItem('app-user-id') || localStorage.getItem('thoth_user_id') || '';
       const deviceId = getDeviceId();
-      const wsUrl = liveWsUrl(`/api/live-audio?voice=${encodeURIComponent(voiceId)}&userId=${encodeURIComponent(userId)}&deviceId=${encodeURIComponent(deviceId)}`);
+      const wsUrl = liveWsUrl(`/api/live-audio?voice=${encodeURIComponent(voiceId)}&userId=${encodeURIComponent(userId)}&deviceId=${encodeURIComponent(deviceId)}${teachTopic ? `&studyTopic=${encodeURIComponent(teachTopic)}` : ''}`);
       const engine = getEngine();
       engine.setMuted(isMutedRef.current);
       await engine.connect(wsUrl);
@@ -301,8 +305,12 @@ export function VoiceDialog({
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span className="text-sm font-semibold text-white/90">
-              {isAr ? 'محادثة صوتية حية' : 'Live Voice Conversation'}
+            <span className="text-sm font-semibold text-white/90 truncate max-w-[70vw]">
+              {teachTopic
+                ? (isAr 
+                    ? `🎓 درس صوتي: ${teachTopic.length > 46 ? teachTopic.slice(0, 46) + '…' : teachTopic}`
+                    : `🎓 Voice lesson: ${teachTopic.length > 46 ? teachTopic.slice(0, 46) + '…' : teachTopic}`)
+                : (isAr ? 'محادثة صوتية حية' : 'Live Voice Conversation')}
             </span>
           </div>
         </div>

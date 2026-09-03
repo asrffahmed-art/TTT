@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { 
   CheckCircle2, Circle, Plus, Trash2, Calendar, RefreshCw, 
   ListTodo, Check, Sparkles, Filter, AlertCircle, ChevronDown, 
-  ExternalLink, LogIn, Edit2, AlarmClock, CalendarDays
+  ExternalLink, LogIn, Edit2, AlarmClock, CalendarDays, BookOpen, Volume2
 } from 'lucide-react';
 import { AlarmsView, CalendarView } from './StudyTools';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from 'firebase/auth';
@@ -29,9 +29,11 @@ export interface TaskList {
 
 export interface GoogleTasksProps {
   onAction?: (msg: string) => void;
+  // [STUDY TOOLS] opens the in-page voice lesson modal for a task topic
+  onVoiceLearn?: (topic: string) => void;
 }
 
-export function GoogleTasks({ onAction }: GoogleTasksProps) {
+export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
   const { t, language } = useLanguage();
   const isAr = language === 'ar';
   const theme = useAppTheme();
@@ -764,6 +766,27 @@ export function GoogleTasks({ onAction }: GoogleTasksProps) {
                 )}
               </div>
 
+              {/* [STUDY TOOLS] Learn buttons — chat tutor + in-page voice tutor.
+                  Always visible (owner request): two buttons ON the task. */}
+              <button
+                onClick={() => onAction?.(isAr
+                  ? `🎓 وضع التعلم التفاعلي — درس في: «${task.title}»${task.notes ? `\n(${task.notes})` : ''}`
+                  : `🎓 Interactive learning mode — lesson on: "${task.title}"${task.notes ? `\n(${task.notes})` : ''}`
+                )}
+                className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-bold text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 rounded-lg transition-all cursor-pointer shrink-0"
+                title={isAr ? 'تعلم بالمحادثة — THOTH يشرح ويسألك أسئلة' : 'Learn in chat — THOTH teaches & quizzes you'}
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>{isAr ? 'تعلم' : 'Learn'}</span>
+              </button>
+              <button
+                onClick={() => onVoiceLearn?.(task.title)}
+                className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-bold text-purple-300 hover:text-purple-200 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/25 rounded-lg transition-all cursor-pointer shrink-0"
+                title={isAr ? 'درس صوتي داخل صفحة المهام' : 'Voice lesson right here in Tasks'}
+              >
+                <Volume2 className="w-3.5 h-3.5" />
+                <span>{isAr ? 'صوت' : 'Voice'}</span>
+              </button>
               <button
                 onClick={() => onAction?.(isAr 
                   ? `كيف يمكنني إنجاز هذه المهمة بشكل أفضل؟ \nالمهمة: ${task.title}${task.notes ? '\nملاحظات: ' + task.notes : ''}`

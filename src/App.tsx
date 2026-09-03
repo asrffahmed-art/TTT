@@ -42,6 +42,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('chat');
   const [initialMessage, setInitialMessage] = useState<any>('');
   const [isLiveAudioOpen, setIsLiveAudioOpen] = useState(false);
+  // [STUDY TOOLS] topic for the in-Tasks-page voice lesson (VoiceDialog tutor mode)
+  const [voiceLearnTopic, setVoiceLearnTopic] = useState<string | null>(null);
   const [isArtifactOpen, setIsArtifactOpen] = useState(false);
   const [isDailyBriefingOpen, setIsDailyBriefingOpen] = useState(false);
   const [isKeepModalOpen, setIsKeepModalOpen] = useState(false);
@@ -664,9 +666,11 @@ export default function App() {
         </div>
         {(isLiveAudioOpen) && (
           <VoiceDialog 
-            onClose={() => { setIsLiveAudioOpen(false); }} 
+            onClose={() => { setIsLiveAudioOpen(false); setVoiceLearnTopic(null); }} 
+            teachTopic={voiceLearnTopic ?? undefined}
             onOpenAuth={() => {
               setIsLiveAudioOpen(false);
+              setVoiceLearnTopic(null);
               setActiveTab('auth');
             }}
           />
@@ -675,7 +679,7 @@ export default function App() {
           <LiveTranslate onSendToChat={handleStartAction} onNavigate={(tab) => setActiveTab(tab)} />
         </div>
         <div className={activeTab === 'tasks' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
-          <GoogleTasks onAction={handleStartAction} />
+          <GoogleTasks onAction={handleStartAction} onVoiceLearn={(topic) => { setVoiceLearnTopic(topic); setIsLiveAudioOpen(true); }} />
         </div>
         <div className={activeTab === 'classroom' ? 'flex flex-col h-full w-full overflow-hidden' : 'hidden'}>
           <Classroom onStartAiChat={handleStartAction} />
