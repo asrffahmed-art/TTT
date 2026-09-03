@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Mic, MicOff, PhoneOff, Loader2, Volume2, Check, ChevronDown, RefreshCw, Play, Clock, Lock, LogIn, Sparkles, AlertCircle
+  Mic, MicOff, PhoneOff, Loader2, Volume2, Check, ChevronDown, RefreshCw, Play, Clock, Lock, LogIn, Sparkles, AlertCircle, GraduationCap, ScrollText
 } from 'lucide-react';
 import { useLanguage } from '../lib/LanguageContext';
 import { getDeviceId } from '../lib/otpService';
@@ -43,6 +43,36 @@ export function VoiceDialog({
   const [isMuted, setIsMuted] = useState(false);
   const [showVoiceMenu, setShowVoiceMenu] = useState(false);
   const [needUserGesture, setNeedUserGesture] = useState(false);
+  // [STUDY TOOLS] automatic lesson close: the server sends {type:'lesson_end'}
+  // when the tutor says the reserved closing phrase; we let the farewell
+  // audio finish, then end the call automatically (owner directive).
+  const [lessonEnded, setLessonEnded] = useState(false);
+  const autoCloseRef = useRef(false);
+  const autoCloseTimerRef = useRef<any>(null);
+  const notebookRef = useRef<HTMLDivElement | null>(null);
+
+  const doAutoClose = () => {
+    if (!autoCloseRef.current) return;
+    autoCloseRef.current = false;
+    if (autoCloseTimerRef.current) { clearTimeout(autoCloseTimerRef.current); autoCloseTimerRef.current = null; }
+    try { engineRef.current?.stop(true); } catch (e) {}
+    isSessionActiveRef.current = false;
+    onClose();
+  };
+
+  const scheduleAutoClose = () => {
+    if (autoCloseTimerRef.current) return;
+    // Safety cap: even if playback events misfire, close shortly after the
+    // farewell should have finished.
+    autoCloseTimerRef.current = setTimeout(doAutoClose, 7000);
+  };
+
+  // Auto-scroll the lesson notebook as the tutor speaks
+  useEffect(() => {
+    if (teachTopic && notebookRef.current) {
+      notebookRef.current.scrollTop = notebookRef.current.scrollHeight;
+    }
+  }, [transcripts, teachTopic]);
 
   // Guest Voice Quota Management (3 Minutes = 180 Seconds per 24 Hours)
   const [isGuest, setIsGuest] = useState<boolean>(() => {
@@ -134,6 +164,10 @@ export function VoiceDialog({
           if (isSessionActiveRef.current) {
             setVoiceState('listening');
           }
+          // [STUDY TOOLS] farewell finished -> end the lesson call gracefully
+          if (autoCloseRef.current) {
+            setTimeout(doAutoClose, 1200);
+          }
         }
       });
       // Debug surface for support/diagnostics (no UI impact)
@@ -190,6 +224,13 @@ export function VoiceDialog({
           return [...prev, { role: 'model', text: msg.text }];
         }
       });
+    } else if (msg.type === 'lesson_end') {
+      // Tutor said the scripted goodbye — close once the audio finishes.
+      setLessonEnded(true);
+      autoCloseRef.current = true;
+      scheduleAutoClose();
+      // If nothing is playing right now, the farewell is already over.
+      setTimeout(() => { if (autoCloseRef.current) doAutoClose(); }, 2500);
     } else if (msg.type === 'error') {
       setErrorMessage(msg.message || "حدث خطأ أثناء الاتصال الصوتي");
       stopSession();
@@ -302,19 +343,46 @@ export function VoiceDialog({
       
       {/* Header */}
       <header className="w-full flex items-center justify-between px-6 py-5 border-b border-white/5 relative z-20">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span className="text-sm font-semibold text-white/90 truncate max-w-[70vw]">
+            <div className={`w-2.5 h-2.5 rounded-full animate-pulse bg-emerald-500`}></div>
+            {teachTopic && <GraduationCap className="w-5 h-5 text-emerald-400 shrink-0" />}
+            <span className="text-sm font-semibold text-white/90 truncate max-w-[60vw]">
               {teachTopic
                 ? (isAr 
-                    ? `🎓 درس صوتي: ${teachTopic.length > 46 ? teachTopic.slice(0, 46) + '…' : teachTopic}`
-                    : `🎓 Voice lesson: ${teachTopic.length > 46 ? teachTopic.slice(0, 46) + '…' : teachTopic}`)
+                    ? `درس صوتي: ${teachTopic.length > 46 ? teachTopic.slice(0, 46) + '…' : teachTopic}`
+                    : `Voice lesson: ${teachTopic.length > 46 ? teachTopic.slice(0, 46) + '…' : teachTopic}`)
                 : (isAr ? 'محادثة صوتية حية' : 'Live Voice Conversation')}
             </span>
+            {teachTopic && (
+              <span className="hidden sm:inline text-[10px] font-black text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-full shrink-0">
+                {isAr ? 'درس تفاعلي مع THOTH' : 'Interactive lesson'}
+              </span>
+            )}
           </div>
         </div>
       </header>
+
+      {/* [STUDY TOOLS] Lesson roadmap — the lesson has a defined structure */}
+      {teachTopic && (
+        <div className="w-full px-4 pt-3 relative z-10">
+          <div className="max-w-xl mx-auto flex items-center justify-center gap-1.5 flex-wrap">
+            {[
+              isAr ? 'شرح وتفاعل' : 'Teach',
+              isAr ? 'مراجعة' : 'Review',
+              isAr ? 'اختبار سريع' : 'Quiz',
+              isAr ? 'ختام' : 'Wrap-up'
+            ].map((phase, i) => (
+              <span key={phase} className="flex items-center gap-1.5">
+                {i > 0 && <span className="text-emerald-500/50 text-[10px]">←</span>}
+                <span className="text-[10px] font-bold text-emerald-200/90 bg-emerald-500/10 border border-emerald-500/25 rounded-full px-2.5 py-1">
+                  {i + 1}. {phase}
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Center Animated Orb */}
       <main className="flex-1 flex flex-col items-center justify-center p-6 relative">
@@ -336,9 +404,9 @@ export function VoiceDialog({
           <div 
             className={`w-48 h-48 sm:w-56 sm:h-56 rounded-full transition-all duration-700 flex items-center justify-center ${
               voiceState === 'speaking'
-                ? 'bg-indigo-500/25 scale-110 blur-xl'
+                ? teachTopic ? 'bg-emerald-500/25 scale-110 blur-xl' : 'bg-indigo-500/25 scale-110 blur-xl'
                 : voiceState === 'listening' && !isMuted
-                ? 'bg-purple-500/20 scale-105 blur-lg animate-pulse'
+                ? teachTopic ? 'bg-teal-500/20 scale-105 blur-lg animate-pulse' : 'bg-purple-500/20 scale-105 blur-lg animate-pulse'
                 : 'bg-white/5 blur-md'
             }`}
           />
@@ -348,9 +416,13 @@ export function VoiceDialog({
             onClick={handleOrbClick}
             className={`absolute w-36 h-36 sm:w-44 sm:h-44 rounded-full flex flex-col items-center justify-center transition-all duration-500 border cursor-pointer active:scale-95 ${
               voiceState === 'speaking'
-                ? 'bg-gradient-to-tr from-indigo-600 to-cyan-500 border-cyan-300 shadow-[0_0_40px_rgba(99,102,241,0.6)]'
+                ? teachTopic
+                  ? 'bg-gradient-to-tr from-emerald-600 to-teal-500 border-teal-300 shadow-[0_0_40px_rgba(16,185,129,0.55)]'
+                  : 'bg-gradient-to-tr from-indigo-600 to-cyan-500 border-cyan-300 shadow-[0_0_40px_rgba(99,102,241,0.6)]'
                 : voiceState === 'listening' && !isMuted
-                ? 'bg-gradient-to-tr from-purple-600 to-indigo-600 border-purple-400 shadow-[0_0_30px_rgba(168,85,247,0.5)]'
+                ? teachTopic
+                  ? 'bg-gradient-to-tr from-emerald-600 to-teal-600 border-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.45)]'
+                  : 'bg-gradient-to-tr from-purple-600 to-indigo-600 border-purple-400 shadow-[0_0_30px_rgba(168,85,247,0.5)]'
                 : isMuted
                 ? 'bg-rose-950/50 border-rose-500/60 text-rose-400'
                 : 'bg-white/10 border-white/20 hover:bg-white/15'
@@ -382,17 +454,20 @@ export function VoiceDialog({
         {/* Status Text */}
         <div className="text-center space-y-1 mt-8 max-w-sm">
           <p className="text-base font-medium text-white/90">
-            {voiceState === 'connecting' && (isAr ? 'جاري الاتصال...' : 'Connecting...')}
-            {voiceState === 'listening' && !isMuted && (isAr ? 'المساعد يستمع إليك... تحدث بحرية' : 'Listening... Speak freely')}
-            {voiceState === 'speaking' && (isAr ? 'يتحدث إليك...' : 'Speaking...')}
-            {voiceState === 'listening' && isMuted && (isAr ? 'الميكروفون مكتوم حالياً' : 'Microphone is muted')}
-            {voiceState === 'initial' && (isAr ? 'اضغط على الكرة للبدء' : 'Tap the sphere to start')}
-            {voiceState === 'error' && (errorMessage || (isAr ? 'حدث خطأ بالاتصال' : 'Connection error'))}
+            {lessonEnded && (isAr ? 'انتهى الدرس ✅ — جاري إنهاء المكالمة...' : 'Lesson complete ✅ — ending call...')}
+            {!lessonEnded && voiceState === 'connecting' && (isAr ? 'جاري الاتصال...' : 'Connecting...')}
+            {!lessonEnded && voiceState === 'listening' && !isMuted && (isAr ? 'المعلم يستمع إليك... تحدث بحرية' : 'Listening... Speak freely')}
+            {!lessonEnded && voiceState === 'speaking' && (isAr ? (teachTopic ? 'المعلم بيشرح...' : 'يتحدث إليك...') : (teachTopic ? 'Teaching...' : 'Speaking...'))}
+            {!lessonEnded && voiceState === 'listening' && isMuted && (isAr ? 'الميكروفون مكتوم حالياً' : 'Microphone is muted')}
+            {!lessonEnded && voiceState === 'initial' && (isAr ? 'اضغط على الكرة للبدء' : 'Tap the sphere to start')}
+            {!lessonEnded && voiceState === 'error' && (errorMessage || (isAr ? 'حدث خطأ بالاتصال' : 'Connection error'))}
           </p>
           <p className="text-xs text-white/40">
             {voiceState === 'error' 
               ? (isAr ? 'انقر أدناه لإعادة الاتصال' : 'Click below to reconnect') 
-              : (isAr ? 'تحدث بشكل طبيعي بدون الانتظار' : 'Speak naturally without waiting')}
+              : teachTopic
+                ? (isAr ? 'اسأل المعلم أي حاجة في الدرس — وخليه يقفل لوحده لما تقول كفايه' : 'Ask anything about the lesson — say “enough” and it ends itself')
+                : (isAr ? 'تحدث بشكل طبيعي بدون الانتظار' : 'Speak naturally without waiting')}
           </p>
         </div>
 
@@ -407,6 +482,31 @@ export function VoiceDialog({
         )}
 
       </main>
+
+      {/* [STUDY TOOLS] Lesson notebook — live transcript of the tutor (دفتر الدرس) */}
+      {teachTopic && (
+        <div className="w-full px-4 pb-2 relative z-10">
+          <div className="max-w-xl mx-auto bg-white/[0.04] border border-emerald-500/20 rounded-2xl overflow-hidden backdrop-blur-md">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-emerald-500/15 bg-emerald-500/[0.06]">
+              <ScrollText className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-[11px] font-black text-emerald-200">{isAr ? 'دفتر الدرس — ملاحظات مباشرة' : 'Lesson notebook — live notes'}</span>
+            </div>
+            <div ref={notebookRef} className="max-h-28 overflow-y-auto px-4 py-2.5 space-y-1.5 hide-scrollbar" dir={isAr ? 'rtl' : 'ltr'}>
+              {transcripts.length === 0 ? (
+                <p className="text-[11px] text-white/35 text-center py-2">
+                  {isAr ? 'هتلاقي هنا ملخص كلام المعلم وهو بيشرح 📝' : 'The tutor\'s key words will appear here 📝'}
+                </p>
+              ) : (
+                transcripts.filter(t => t.text && t.text.trim()).map((t, i) => (
+                  <p key={i} className="text-[11px] leading-relaxed text-emerald-100/85">
+                    <span className="text-emerald-400 font-bold">🎓 </span>{t.text}
+                  </p>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer Controls */}
       <footer className="w-full py-8 px-6 flex items-center justify-center gap-6 relative z-20">

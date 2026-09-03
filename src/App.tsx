@@ -5,7 +5,7 @@ import { handleUserLogoutCleanup, loadAllSessions } from './lib/chatSessionManag
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLanguage } from './lib/LanguageContext';
 import { MessageSquare, Compass, History as HistoryIcon, Settings as SettingsIcon, Bookmark, GraduationCap, ListTodo, Radio, Languages, Sparkles, Bell, X } from 'lucide-react';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
@@ -252,18 +252,25 @@ export default function App() {
   // open: local chime + in-app toast (reuses foregroundToast) + a system
   // notification when permission was already granted. 100% local: reads the
   // user's own localStorage only; no server or Firestore involvement.
+  // OWNER FIX: the chime + toast are SUPPRESSED while a live voice session
+  // (lesson or normal call) is open — the WebAudio beep was leaking into the
+  // call (owner heard a weird sound "sometimes": it was an alarm firing).
+  const isLiveAudioOpenRef = useRef(false);
+  useEffect(() => { isLiveAudioOpenRef.current = isLiveAudioOpen; }, [isLiveAudioOpen]);
   useEffect(() => {
     const isArLang = language === 'ar';
     const stopWatcher = startStudyToolsWatcher((r) => {
-      playReminderChime();
-      setForegroundToast({
-        title: isArLang
-          ? `⏰ منبه دراسي${r.repeat === 'daily' ? ' (يومي)' : r.repeat === 'weekly' ? ' (أسبوعي)' : ''}`
-          : `⏰ Study alarm${r.repeat === 'daily' ? ' (daily)' : r.repeat === 'weekly' ? ' (weekly)' : ''}`,
-        body: r.title,
-        notificationId: null,
-        isInfo: true
-      });
+      if (!isLiveAudioOpenRef.current) {
+        playReminderChime();
+        setForegroundToast({
+          title: isArLang
+            ? `⏰ منبه دراسي${r.repeat === 'daily' ? ' (يومي)' : r.repeat === 'weekly' ? ' (أسبوعي)' : ''}`
+            : `⏰ Study alarm${r.repeat === 'daily' ? ' (daily)' : r.repeat === 'weekly' ? ' (weekly)' : ''}`,
+          body: r.title,
+          notificationId: null,
+          isInfo: true
+        });
+      }
       try {
         if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
           new Notification(isArLang ? '⏰ THOTH — منبه دراسي' : '⏰ THOTH — Study alarm', {
