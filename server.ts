@@ -10101,35 +10101,14 @@ app.all("/api/*", (req, res) => {
         // Dedicated Gemini 3.5 Live Translate (Live API)
         const rawTarget = (reqUrl.searchParams.get("targetLang") || "ar").trim();
 
-        // [DIALECT-FIX] Previously ALL Arabic dialect ids collapsed into 'ar', so the model
-        // received a generic "translate to Arabic" target and mixed dialects (Shami + Egyptian...).
-        // Per the official SDK, TranslationConfig.targetLanguageCode accepts full BCP-47 codes,
-        // so each dialect now keeps its own code PLUS an explicit output directive.
-        const AR_DIALECT_TARGETS: Record<string, { code: string; directive?: string }> = {
-          'ar':          { code: 'ar' },
-          'العربية':     { code: 'ar' },
-          'ar_msa':      { code: 'ar', directive: 'Modern Standard Arabic (العربية الفصحى المعيارية) only — never use any colloquial dialect.' },
-          'ar_eg':       { code: 'ar-EG', directive: 'Egyptian Arabic (اللهجة المصرية العامية — القاهرة والدلتا) exclusively: words like إزيك، عايز، ليه، دلوقتي، عشان. Never mix Gulf, Levantine, Maghrebi or formal MSA phrasing.' },
-          'ar_sy':       { code: 'ar-SY', directive: 'Syrian Levantine Arabic (اللهجة الشامية السورية — دمشق وحلب) exclusively: words like شو، بدك، هلق، منيح، كتير. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
-          'ar_lb':       { code: 'ar-LB', directive: 'Lebanese Arabic (اللهجة اللبنانية — بيروت والجبل) exclusively: words like شو، هيك، كتير، يا حرا. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
-          'ar_ps':       { code: 'ar-PS', directive: 'Palestinian Arabic (اللهجة الفلسطينية) exclusively — urban Palestinian phrasing. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
-          'ar_jo':       { code: 'ar-JO', directive: 'Jordanian Arabic (اللهجة الأردنية — عمّان) exclusively. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
-          'ar_levant':   { code: 'ar-JO', directive: 'Levantine Shami Arabic (اللهجة الشامية — سوريا ولبنان وفلسطين والأردن) exclusively. Never mix Egyptian, Gulf or Maghrebi vocabulary.' },
-          'ar_sa_najdi': { code: 'ar-SA', directive: 'Najdi Saudi Arabic (اللهجة النجدية — الرياض والقصيم) exclusively: words like وش، ليش، الحين، دحين. Never mix Hijazi, Egyptian or Levantine phrasing.' },
-          'ar_sa_hijazi':{ code: 'ar-SA', directive: 'Hijazi Saudi Arabic (اللهجة الحجازية — جدة ومكة والمدينة) exclusively: words like إيش، الآن، طيب، يالله. Never mix Najdi, Egyptian or Levantine phrasing.' },
-          'ar_ae':       { code: 'ar-AE', directive: 'Emirati Arabic (اللهجة الإماراتية) exclusively: words like شحالك، وايد، أبشر، خوش. Never mix other Gulf, Levantine or Egyptian dialects.' },
-          'ar_kw':       { code: 'ar-KW', directive: 'Kuwaiti Arabic (اللهجة الكويتية) exclusively. Never mix other Gulf, Levantine or Egyptian dialects.' },
-          'ar_qa':       { code: 'ar-QA', directive: 'Qatari Arabic (اللهجة القطرية) exclusively. Never mix other Gulf, Levantine or Egyptian dialects.' },
-          'ar_bh':       { code: 'ar-BH', directive: 'Bahraini Arabic (اللهجة البحرينية) exclusively. Never mix other Gulf, Levantine or Egyptian dialects.' },
-          'ar_om':       { code: 'ar-OM', directive: 'Omani Arabic (اللهجة العمانية) exclusively. Never mix other Gulf, Levantine or Egyptian dialects.' },
-          'ar_ye':       { code: 'ar-YE', directive: 'Yemeni Arabic (اللهجة اليمنية — صنعاء وعدن) exclusively. Never mix Gulf, Levantine or Egyptian dialects.' },
-          'ar_iq':       { code: 'ar-IQ', directive: 'Iraqi Arabic (اللهجة العراقية — بغداد والبصرة) exclusively: words like شلون، أكو، ماكو، هواية. Never mix Gulf, Levantine or Egyptian dialects.' },
-          'ar_ma':       { code: 'ar-MA', directive: 'Moroccan Darija (الدارجة المغربية) exclusively. Never mix Middle-Eastern dialects or formal MSA into the output.' },
-          'ar_dz':       { code: 'ar-DZ', directive: 'Algerian Arabic (اللهجة الجزائرية الدارجة) exclusively. Never mix Middle-Eastern dialects or formal MSA into the output.' },
-          'ar_tn':       { code: 'ar-TN', directive: 'Tunisian Arabic (اللهجة التونسية الدارجة) exclusively. Never mix Middle-Eastern dialects or formal MSA into the output.' },
-          'ar_ly':       { code: 'ar-LY', directive: 'Libyan Arabic (اللهجة الليبية — طرابلس وبنغازي) exclusively. Never mix Middle-Eastern dialects or formal MSA into the output.' },
-          'ar_sd':       { code: 'ar-SD', directive: 'Sudanese Arabic (اللهجة السودانية — الخرطوم) exclusively. Never mix Egyptian, Gulf or Levantine dialects.' }
-        };
+        // [OFFICIAL LIVE TRANSLATE] Per the official docs
+        // (ai.google.dev/gemini-api/docs/live-api/live-translate, updated 2026-07-23):
+        // gemini-3.5-live-translate-preview supports NO system instructions (pure
+        // low-latency translation only) and lists Arabic ONLY as the base code 'ar'
+        // (pt-BR/pt-PT are the sole regional variants). Every Arabic dialect id
+        // therefore normalizes to 'ar' on the LIVE voice path; dialect steering
+        // stays available in the TEXT endpoint which does support instructions.
+        const isArabicTarget = rawTarget === 'ar' || rawTarget === 'العربية' || /^ar_/.test(rawTarget);
 
         const GLOBAL_LANG_CODES: Record<string, string> = {
           'en': 'en', 'الإنجليزية': 'en',
@@ -10172,26 +10151,42 @@ app.all("/api/*", (req, res) => {
         };
 
         let targetLangCode = 'ar';
-        let dialectDirective: string | undefined = undefined;
-        if (AR_DIALECT_TARGETS[rawTarget]) {
-          targetLangCode = AR_DIALECT_TARGETS[rawTarget].code;
-          dialectDirective = AR_DIALECT_TARGETS[rawTarget].directive;
+        if (isArabicTarget) {
+          targetLangCode = 'ar';
         } else if (GLOBAL_LANG_CODES[rawTarget]) {
           targetLangCode = GLOBAL_LANG_CODES[rawTarget];
         } else {
           targetLangCode = rawTarget.slice(0, 2).toLowerCase() || 'ar';
         }
-        console.log("[GEMINI 3.5 LIVE TRANSLATE] Connecting via Live API. Target language:", targetLangCode, dialectDirective ? "(dialect directive active)" : "");
+        // Official supported-list alignment: the docs table lists Chinese as
+        // zh-Hans/zh-Hant and Portuguese as pt-BR/pt-PT; Somali and Kurdish are
+        // not in the official list (an unsupported target would fail the whole
+        // session), so they gracefully fall back to 'en'.
+        if (targetLangCode === 'zh') targetLangCode = 'zh-Hans';
+        if (targetLangCode === 'pt') targetLangCode = 'pt-BR';
+        if (targetLangCode === 'so' || targetLangCode === 'ku') targetLangCode = 'en';
+        console.log("[GEMINI 3.5 LIVE TRANSLATE] Connecting via Live API. Target language:", targetLangCode);
 
+        // [OFFICIAL-FIX] Setup watchdog: if the translate model never completes
+        // setup (hung/overloaded), surface a clear error instead of leaving the
+        // client spinning forever on the connecting state.
+        let translateSetupDone = false;
+        let translateSetupWatchdog: any = setTimeout(() => {
+          if (translateSetupDone) return;
+          console.error("[GEMINI 3.5 LIVE TRANSLATE] Setup timeout after 12s");
+          try { if (session) session.close(); } catch (e) {}
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'error', message: 'استغرقت تهيئة محرك الترجمة الحية وقتًا طويلًا — برجاء المحاولة مرة أخرى.' }));
+          }
+        }, 12000);
+
+        // [OFFICIAL-FIX] Exactly the official setup shape (docs example):
+        // responseModalities + both transcriptions + translationConfig.
+        // systemInstruction is NOT part of the translate model's config.
         session = await ai.live.connect({
           model: "gemini-3.5-live-translate-preview",
           config: {
             responseModalities: [Modality.AUDIO],
-            // [DIALECT-FIX] Explicit dialect enforcement so the output never drifts back to MSA
-            // or blends another dialect into the requested one.
-            ...(dialectDirective ? {
-              systemInstruction: `You are a live speech translator. Every translated output MUST be spoken strictly in ${dialectDirective} This dialect rule has the highest priority: never fall back to Modern Standard Arabic, never blend another Arabic dialect, and never answer in the source language.`
-            } : {}),
             translationConfig: {
               targetLanguageCode: targetLangCode,
               echoTargetLanguage: false
@@ -10202,6 +10197,8 @@ app.all("/api/*", (req, res) => {
           callbacks: {
             onmessage: (message: LiveServerMessage) => {
               if ((message as any).setupComplete) {
+                translateSetupDone = true;
+                if (translateSetupWatchdog) { clearTimeout(translateSetupWatchdog); translateSetupWatchdog = null; }
                 console.log("[GEMINI 3.5 LIVE TRANSLATE] Setup complete");
                 if (ws.readyState === WebSocket.OPEN) {
                   ws.send(JSON.stringify({ type: 'live_ready', model: 'gemini-3.5-live-translate-preview' }));
@@ -10209,14 +10206,21 @@ app.all("/api/*", (req, res) => {
               }
 
               if (message.serverContent) {
+                // [OFFICIAL-FIX] Official transcript channels per the docs:
+                // inputTranscription = what the user said, outputTranscription =
+                // the translated speech. modelTurn carries the translated AUDIO
+                // (inlineData); it does not deliver text on this model.
+                const inTr = message.serverContent.inputTranscription;
+                if (inTr && inTr.text && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'input_transcription', text: inTr.text }));
+                }
+                const outTr = message.serverContent.outputTranscription;
+                if (outTr && outTr.text && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'output_transcription', text: outTr.text }));
+                }
                 const modelTurn = message.serverContent.modelTurn;
                 if (modelTurn && modelTurn.parts) {
                   for (const part of modelTurn.parts) {
-                    if (part.text) {
-                      if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'translated_text', text: part.text }));
-                      }
-                    }
                     if (part.inlineData && part.inlineData.data) {
                       if (ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({
@@ -10238,11 +10242,13 @@ app.all("/api/*", (req, res) => {
               }
             },
             onclose: () => {
+              if (translateSetupWatchdog) { clearTimeout(translateSetupWatchdog); translateSetupWatchdog = null; }
               console.log("[GEMINI 3.5 LIVE TRANSLATE] Live session closed");
               if (guestUsageInterval) clearInterval(guestUsageInterval);
               if (ws.readyState === WebSocket.OPEN) ws.close();
             },
             onerror: (err: any) => {
+              if (translateSetupWatchdog) { clearTimeout(translateSetupWatchdog); translateSetupWatchdog = null; }
               console.error("[GEMINI 3.5 LIVE TRANSLATE ERROR]:", err);
               if (guestUsageInterval) clearInterval(guestUsageInterval);
               if (ws.readyState === WebSocket.OPEN) {

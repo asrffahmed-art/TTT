@@ -358,6 +358,14 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
         setLiveError(friendlyMicError(err));
         stopLiveSession();
       });
+    } else if (msg.type === 'input_transcription' && msg.text) {
+      // [OFFICIAL] Live transcript of what the user is saying (official docs
+      // channel: serverContent.inputTranscription) -> fills the source box.
+      setSourceText(prev => prev ? prev + ' ' + msg.text : msg.text);
+    } else if (msg.type === 'output_transcription' && msg.text) {
+      // [OFFICIAL] Live translated text (official docs channel:
+      // serverContent.outputTranscription) -> fills the target box.
+      setTranslatedText(prev => prev ? prev + ' ' + msg.text : msg.text);
     } else if (msg.type === 'translated_text' && msg.text) {
       setTranslatedText(prev => prev ? prev + ' ' + msg.text : msg.text);
     } else if (msg.type === 'interrupted') {
@@ -408,6 +416,12 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       // from WS callbacks (same cure as the voice lessons).
       try { engine.unlockAudio(); } catch {}
       await engine.connect(wsUrl);
+      // Fresh canvas per live session: the source/target boxes now stream
+      // directly from the official transcription channels.
+      setSourceText('');
+      setTranslatedText('');
+      setTransliteration('');
+      setNotes('');
       // The engine's onMessage router handles live_ready -> startCapture()
     } catch (err: any) {
       console.warn('Live translation start error:', err);
