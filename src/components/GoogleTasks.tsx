@@ -511,30 +511,6 @@ export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
             </p>
           </div>
         </div>
-
-        {section === 'tasks' && (
-          <div className="flex items-center gap-2">
-            {!accessToken ? (
-              <button
-                onClick={handleGoogleConnect}
-                disabled={isLoading}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl ${theme.btnPrimary} text-xs font-bold transition-all shadow-lg active:scale-95 disabled:opacity-50`}
-              >
-                <LogIn className="w-4 h-4" />
-                <span>{isAr ? 'مزامنة المهام' : 'Sync Tasks'}</span>
-              </button>
-            ) : (
-              <button
-                onClick={() => fetchGoogleTaskLists(accessToken)}
-                disabled={isSyncing}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl ${theme.bgAccent} border ${theme.borderAccent} ${theme.textAccentBright} text-xs font-bold transition-all active:scale-95 shadow-md`}
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? `animate-spin ${theme.textAccent}` : ''}`} />
-                <span>{isAr ? 'تحديث المهام' : 'Refresh Tasks'}</span>
-              </button>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Hub sections: المهام | المنبه | التقويم */}

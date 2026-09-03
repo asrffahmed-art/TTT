@@ -270,15 +270,18 @@ export default function App() {
           notificationId: null,
           isInfo: true
         });
+        try {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            new Notification(isArLang ? '⏰ THOTH — منبه دراسي' : '⏰ THOTH — Study alarm', {
+              body: r.title,
+              icon: '/icons/icon-192.png'
+            });
+          }
+        } catch { /* notification edge cases — toast already fired */ }
       }
-      try {
-        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-          new Notification(isArLang ? '⏰ THOTH — منبه دراسي' : '⏰ THOTH — Study alarm', {
-            body: r.title,
-            icon: '/icons/icon-192.png'
-          });
-        }
-      } catch { /* notification edge cases — toast already fired */ }
+      // During a live voice call EVERYTHING is suppressed (owner report: the
+      // sound got quieter but was still there — the OS notification was the
+      // remaining leak). Alarms still fire normally outside calls.
     });
     return stopWatcher;
   }, [language]);

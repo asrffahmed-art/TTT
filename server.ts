@@ -10467,6 +10467,22 @@ app.all("/api/*", (req, res) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'live_ready' }));
         }
+
+        // [STUDY TOOLS] Lesson kickoff: with a studyTopic the tutor OPENS the
+        // lesson itself — greeting + full plan + step 1 — without waiting for
+        // the user to speak first (owner: the lesson must be defined from the
+        // start). Failures here never kill the session (normal flow continues).
+        if (studyTopicParam && session) {
+          try {
+            await session.sendClientContent({
+              turns: [{ role: 'user', parts: [{ text: 'ابدأ الدرس الآن فورًا وفق بروتوكول وضع التدريس الصوتي للموضوع: «' + studyTopicParam + '» — رحب واعرض خطة الدرس كاملة وابدأ الخطوة الأولى.' }] }],
+              turnComplete: true
+            });
+            console.log("[GEMINI LIVE] Lesson kickoff sent");
+          } catch (kickErr: any) {
+            console.warn("[GEMINI LIVE] lesson kickoff notice:", kickErr?.message || String(kickErr));
+          }
+        }
       }
       
       ws.on("message", async (data) => {

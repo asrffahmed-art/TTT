@@ -412,6 +412,22 @@ export function extractStudyToolCommands(text: string): StudyToolCommands {
   return { cleanText: clean, reminders, events, tasks };
 }
 
+/**
+ * Render-time sanitizer: strips any machine-only study tags from message text
+ * before it is DISPLAYED. Heals old messages that were saved by earlier
+ * client versions (which did not strip tags) — storage is untouched.
+ */
+export function sanitizeStudyTags(text: string): string {
+  const src = (text || '').toString();
+  if (!src.includes('[[')) return src;
+  return src
+    .replace(REMINDER_TAG_RE, '')
+    .replace(EVENT_TAG_RE, '')
+    .replace(TASK_TAG_RE, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** Executes validated commands into the LOCAL store; returns chat confirmation lines. */
 export function applyStudyToolCommands(cmds: StudyToolCommands, isAr: boolean): string[] {
   const lines: string[] = [];

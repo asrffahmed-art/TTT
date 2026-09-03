@@ -26,7 +26,7 @@ import {
   buildCrossSessionMemory,
   ChatSession 
 } from '../lib/chatSessionManager';
-import { extractStudyToolCommands, applyStudyToolCommands } from '../lib/studyToolsService';
+import { extractStudyToolCommands, applyStudyToolCommands, sanitizeStudyTags } from '../lib/studyToolsService';
 import { compressImage, prepareVideoForUpload, formatBytes, isCompressibleImage, isCompressibleVideo } from '../lib/mediaCompression';
 import { Subscription } from './Subscription';
 import { SearchResultView } from './SearchResultView';
@@ -2318,7 +2318,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                   </div>
                 ) : (msg.sources && msg.sources.length > 0) ? (
                   <SearchResultView
-                    text={msg.text}
+                    text={!msg.isUser && msg.text ? sanitizeStudyTags(msg.text) : msg.text}
                     sources={msg.sources}
                     relatedSources={msg.relatedSources}
                     images={msg.images}
@@ -2642,7 +2642,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                         }
                       }}
                     >
-                      {msg.text}
+                      {!msg.isUser && msg.text && msg.text.includes('[[') ? sanitizeStudyTags(msg.text) : msg.text}
                     </ReactMarkdown>
                   </div>
                 )}
