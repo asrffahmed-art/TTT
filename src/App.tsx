@@ -26,7 +26,7 @@ import { Auth } from './components/Auth';
 import { Navigation } from './components/Navigation';
 import { Header } from './components/Header';
 import { DailyBriefingModal } from './components/DailyBriefingModal';
-import { listenToForegroundMessages, autoRequestNotificationsAfterLogin, requestNotificationPermission, getIOSNotificationSupport, logIOS } from './services/notificationService';
+import { listenToForegroundMessages, listenToBroadcastClicks, autoRequestNotificationsAfterLogin, requestNotificationPermission, getIOSNotificationSupport, logIOS } from './services/notificationService';
 import { THEMES, getStoredThemeId, setStoredTheme, useAppTheme } from './lib/themeService';
 import { adTracker } from './lib/adTrackingService';
 
@@ -207,15 +207,41 @@ export default function App() {
     const unsubscribeFCM = listenToForegroundMessages((payload) => {
       console.log('App received foreground FCM message:', payload);
       const notifId = payload?.data?.notificationId || payload?.data?.tag || null;
+      // [BROADCAST-CLICK] Broadcast campaigns carry a "broadcast_*" id — they
+      // get their own CTA that opens the message inside the chat (instead of
+      // the daily-briefing modal which has no document for them).
+      const isBroadcastPush = typeof notifId === 'string' && notifId.startsWith('broadcast_');
       setForegroundToast({
         title: payload?.notification?.title || '🔔 THOTH Daily',
         body: payload?.notification?.body || 'تم استلام إشعار جديد اليوم!',
-        notificationId: notifId
+        notificationId: notifId,
+        isBroadcast: isBroadcastPush,
+        category: payload?.data?.category || ''
       });
     });
 
     return () => {
       if (typeof unsubscribeFCM === 'function') unsubscribeFCM();
+    };
+  }, []);
+
+  // [BROADCAST-CLICK] When the user taps a broadcast push in the OS tray while
+  // the app was closed/backgrounded, the service worker focuses the app and
+  // posts THOTH_OPEN_BROADCAST — surface the message inside the chat.
+  useEffect(() => {
+    const unsubscribeBroadcast = listenToBroadcastClicks((payload) => {
+      setActiveTab('chat');
+      window.dispatchEvent(new CustomEvent('thoth_inject_broadcast', {
+        detail: {
+          title: payload?.title || '',
+          body: payload?.body || '',
+          category: payload?.category || '',
+          notificationId: payload?.notificationId || ''
+        }
+      }));
+    });
+    return () => {
+      if (typeof unsubscribeBroadcast === 'function') unsubscribeBroadcast();
     };
   }, []);
 
@@ -540,8 +566,28 @@ export default function App() {
           </div>
           <div className="flex-1 overflow-hidden">
             <h4 className="text-sm font-bold text-white">{foregroundToast.title}</h4>
-            <p className="text-xs text-white/70 truncate">{foregroundToast.body}</p>
-            {!foregroundToast.isInfo && (
+            <p className="text-xs text-white/70 line-clamp-2">{foregroundToast.body}</p>
+            {foregroundToast.isBroadcast ? (
+              <button
+                onClick={() => {
+                  // Broadcast message: open it INSIDE the chat as a THOTH
+                  // message so the user can ask follow-up questions about it.
+                  setActiveTab('chat');
+                  window.dispatchEvent(new CustomEvent('thoth_inject_broadcast', {
+                    detail: {
+                      title: foregroundToast.title || '',
+                      body: foregroundToast.body || '',
+                      category: foregroundToast.category || '',
+                      notificationId: foregroundToast.notificationId || ''
+                    }
+                  }));
+                  setForegroundToast(null);
+                }}
+                className="mt-2 text-xs font-bold text-pink-400 hover:text-pink-300 underline"
+              >
+                {t('broadcast_open_in_chat', language === 'ar' ? 'اقرأ الرسالة واسأل عنها في المحادثة ←' : 'Read the message & ask about it in chat ←')}
+              </button>
+            ) : !foregroundToast.isInfo && (
               <button
                 onClick={() => {
                   if (foregroundToast.notificationId) setDailyNotificationId(foregroundToast.notificationId);

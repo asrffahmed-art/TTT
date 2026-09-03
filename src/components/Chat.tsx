@@ -956,6 +956,51 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     switchSession(active);
   }, []);
 
+  // [BROADCAST-CLICK] Surface an admin broadcast message INSIDE the chat as a
+  // THOTH message so the user can read it and ask follow-up questions about it.
+  // The `thoth_inject_broadcast` event is dispatched by App.tsx from two paths:
+  //   1. the in-app notification toast CTA (push arrived while app visible),
+  //   2. the service-worker bridge (user tapped the OS notification while the
+  //      app was closed/backgrounded — THOTH_OPEN_BROADCAST postMessage).
+  // The message is injected as a model message into the CURRENT session only
+  // (display + local cache via the messages effect). For registered users it
+  // is also persisted through the same saveMessageToFirestore path as normal
+  // chat messages; guests keep their zero-storage rule (early-return inside).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      const bTitle = (detail.title || '').toString().trim();
+      const bBody = (detail.body || '').toString().trim();
+      if (!bTitle && !bBody) return;
+
+      const timeString = isAr
+        ? new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+        : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+      const broadcastText = isAr
+        ? `📣 **رسالة من فريق THOTH**\n\n**${bTitle}**\n\n${bBody}\n\nلو عندك أي سؤال عن الرسالة دي أو عايز تفاصيل أكتر، اكتب سؤالك هنا وهجاوبك فورًا. 💬`
+        : `📣 **A message from the THOTH team**\n\n**${bTitle}**\n\n${bBody}\n\nIf you have any question about this message or want more details, just type it here and I'll answer right away. 💬`;
+
+      const injected: Message = {
+        id: Date.now(),
+        senderId: 'model',
+        chatId: sessionIdRef.current,
+        userId: getEffectiveUserId() || 'model',
+        text: broadcastText,
+        isUser: false,
+        time: timeString,
+        timestamp: new Date().toISOString(),
+        messageType: 'text'
+      };
+
+      setMessages(prev => [...prev, injected]);
+      saveMessageToFirestore(injected);
+    };
+
+    window.addEventListener('thoth_inject_broadcast', handler);
+    return () => window.removeEventListener('thoth_inject_broadcast', handler);
+  }, []);
+
   useEffect(() => {
     if (!currentSessionId) return;
 

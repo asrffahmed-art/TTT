@@ -416,6 +416,28 @@ export function listenToForegroundMessages(onMessageCallback: (payload: any) => 
 }
 
 /**
+ * Broadcast click bridge: when the user taps a broadcast push notification in
+ * the OS notification tray (app closed or backgrounded), the service worker
+ * focuses/opens the app and posts a {type:'THOTH_OPEN_BROADCAST'} message.
+ * The page uses this listener to surface the broadcast INSIDE the chat as a
+ * THOTH message the user can reply to. Returns an unsubscribe function.
+ */
+export function listenToBroadcastClicks(onCallback: (payload: any) => void) {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return () => {};
+
+  const handler = (event: MessageEvent) => {
+    const data = event.data;
+    if (!data || data.type !== 'THOTH_OPEN_BROADCAST') return;
+    console.log('Broadcast notification click received:', data.payload);
+    logIOS('Broadcast click received', data.payload?.title || '');
+    onCallback(data.payload);
+  };
+
+  navigator.serviceWorker.addEventListener('message', handler);
+  return () => navigator.serviceWorker.removeEventListener('message', handler);
+}
+
+/**
  * Trigger a test push through the server. `token` is the Web Push subscription JSON.
  */
 export async function triggerTestPushNotification(userId: string, token: string) {
