@@ -9,6 +9,11 @@
 // block) to append machine-only tags at the END of its reply:
 //   [[THOTH_REMINDER::{"title":"...","date":"YYYY-MM-DD","time":"HH:MM","repeat":"once|daily|weekly"}]]
 //   [[THOTH_EVENT::{"title":"...","date":"YYYY-MM-DD","time":"HH:MM","note":"..."}]]
+//   [[THOTH_TASK::{"title":"...","date":"YYYY-MM-DD","time":"HH:MM","notes":"...","plan":"..."}]]
+//     `plan` is OPTIONAL: when the reply is a full study plan, every task tag
+//     carries the same plan/subject name (e.g. "الإنجليزية") so the Tasks page
+//     can group the whole plan under ONE collapsible course header. Single
+//     tasks outside a plan omit it — backward compatible with old tags.
 // extractStudyToolCommands() strips those tags from the visible text and
 // applyStudyToolCommands() executes them into the local store.
 
@@ -39,7 +44,7 @@ export interface StudyToolCommands {
   cleanText: string;
   reminders: { title: string; date: string; time: string; repeat: 'once' | 'daily' | 'weekly' }[];
   events: { title: string; date: string; time?: string; note?: string }[];
-  tasks: { title: string; date: string; time?: string; notes?: string }[];
+  tasks: { title: string; date: string; time?: string; notes?: string; plan?: string }[];
 }
 
 const REMINDERS_KEY = (uid: string) => `thoth_study_reminders_${uid}`;
@@ -164,12 +169,16 @@ export function getEventsForDate(date: string): StudyEvent[] {
 
 export const THOTH_TASKS_UPDATED_EVENT = 'thoth_tasks_updated';
 
-export function addAiTask(input: { title: string; date: string; time?: string; notes?: string }): { ok: boolean; duplicate?: boolean } {
+export function addAiTask(input: { title: string; date: string; time?: string; notes?: string; plan?: string }): { ok: boolean; duplicate?: boolean } {
   const title = (input.title || '').toString().trim().slice(0, 160);
   const date = normalizeDate(input.date || '');
   if (!title || !date) return { ok: false };
   const time = normalizeTime(input.time || '');
   const notes = (input.notes || '').toString().trim().slice(0, 300);
+  // [STUDY TOOLS — Task 33] plan = the study-plan/subject name that groups a
+  // whole AI course under one collapsible header on the Tasks page. Additive
+  // optional field — tasks without it keep the exact same stored shape.
+  const plan = (input.plan || '').toString().trim().slice(0, 80) || undefined;
 
   const key = `app-google-tasks-${ownerKey()}`;
   const list = readList<any>(key);
@@ -190,7 +199,8 @@ export function addAiTask(input: { title: string; date: string; time?: string; n
     // Same convention as the Add-Task form: date-only input -> UTC midnight ISO;
     // the calendar reads slice(0,10) so the day stays exactly what was chosen.
     due: `${date}T00:00:00.000Z`,
-    listId: 'default'
+    listId: 'default',
+    plan
   };
 
   list.unshift(task);
@@ -402,7 +412,8 @@ export function extractStudyToolCommands(text: string): StudyToolCommands {
         title: String(o.title).slice(0, 160),
         date,
         time: normalizeTime(o.time || '') || undefined,
-        notes: o.notes ? String(o.notes).slice(0, 300) : undefined
+        notes: o.notes ? String(o.notes).slice(0, 300) : undefined,
+        plan: o.plan ? String(o.plan).slice(0, 80) : undefined
       });
     }
     return '';
@@ -471,9 +482,12 @@ export function applyStudyToolCommands(cmds: StudyToolCommands, isAr: boolean): 
     }
     if (added > 0 || dups > 0) {
       const dupNote = dups > 0 ? (isAr ? ` (تخطيت ${dups} مكررة)` : ` (skipped ${dups} duplicates)`) : '';
+      // [Task 33] name the course when the reply carried a plan field
+      const planName = (cmds.tasks.find(t => t.plan) || ({} as any)).plan as string | undefined;
+      const planBit = planName ? (isAr ? ` «${planName}»` : ` "${planName}"`) : '';
       lines.push(isAr
-        ? `📋 **تمت إضافة ${added} ${isAr ? (added === 1 ? 'مهمة' : 'مهام') : added === 1 ? 'task' : 'tasks'} لخطة دراستك في صفحة المهام — بالشعارات والتواريخ والوقت**${dupNote} 🗂️`
-        : `📋 **Added ${added} ${added === 1 ? 'task' : 'tasks'} to your study plan on the Tasks page — with icons, dates and times**${dupNote} 🗂️`);
+        ? `📋 **تمت إضافة ${added} ${isAr ? (added === 1 ? 'مهمة' : 'مهام') : added === 1 ? 'task' : 'tasks'} لخطة دراستك${planBit} في صفحة المهام — هتلاقيها مجمّعة كدرس واحد هناك**${dupNote} 🗂️`
+        : `📋 **Added ${added} ${added === 1 ? 'task' : 'tasks'} to your study plan${planBit} on the Tasks page — grouped as one course there**${dupNote} 🗂️`);
     }
   }
 

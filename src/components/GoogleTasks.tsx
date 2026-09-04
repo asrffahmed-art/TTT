@@ -19,6 +19,7 @@ export interface TaskItem {
   due?: string;
   updated?: string;
   listId?: string;
+  plan?: string;
 }
 
 export interface TaskList {
@@ -78,6 +79,11 @@ export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
 
   // Filter
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'completed'>('all');
+
+  // [STUDY TOOLS — Task 33] Open/closed state per course (plan) header.
+  // Plans missing from this map default to: newest (first) plan open,
+  // older ones collapsed — a fresh plan is visible immediately.
+  const [expandedPlans, setExpandedPlans] = useState<Record<string, boolean>>({});
 
   // Confirmation modal state for destructive operations
   const [confirmModal, setConfirmModal] = useState<{
@@ -511,6 +517,111 @@ export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
   const activeCount = tasks.filter(t => (t.listId === activeListId || !t.listId) && t.status === 'needsAction').length;
   const completedCount = tasks.filter(t => (t.listId === activeListId || !t.listId) && t.status === 'completed').length;
 
+
+  // [STUDY TOOLS — Task 33] Owner request: organize tasks by LESSON. AI study
+  // plans now tag every task with the same `plan` (subject) name; those tasks
+  // group under ONE collapsible course header with progress. Tasks without a
+  // plan stay flat exactly as before (full backward compatibility).
+  const planOrder: string[] = [];
+  const planCounts: Record<string, { done: number; total: number }> = {};
+  tasks.forEach(t => {
+    if (!t.plan || (t.listId && t.listId !== activeListId)) return;
+    if (!planCounts[t.plan]) { planCounts[t.plan] = { done: 0, total: 0 }; planOrder.push(t.plan); }
+    planCounts[t.plan].total++;
+    if (t.status === 'completed') planCounts[t.plan].done++;
+  });
+  const planGroups = planOrder
+    .filter(name => filteredTasks.some(t => t.plan === name))
+    .map(name => ({
+      name,
+      counts: planCounts[name],
+      tasks: filteredTasks
+        .filter(t => t.plan === name)
+        .slice()
+        .sort((a, b) => (a.due || '').slice(0, 10).localeCompare((b.due || '').slice(0, 10)))
+    }));
+  const standaloneTasks = filteredTasks.filter(t => !t.plan || !planCounts[t.plan]);
+
+  // Shared task card renderer — the flat list AND every course group use the
+  // SAME card, so every task keeps the exact same learning tools everywhere.
+  const renderTaskCard = (task: TaskItem) => (
+            <div
+              key={task.id}
+              className={`p-4 rounded-2xl border transition-all flex items-start gap-3 group ${task.status === 'completed' ? 'bg-white/5 border-white/5 text-white/40 opacity-70' : 'bg-white/5 border-white/10 text-white hover:bg-white/[0.08] hover:border-white/20 shadow-lg'}`}
+            >
+              <button
+                onClick={() => handleToggleTask(task)}
+                className="mt-0.5 shrink-0 transition-transform active:scale-90"
+                title={task.status === 'completed' ? (isAr ? 'تحديد كغير مكتملة' : 'Mark as incomplete') : (isAr ? 'تحديد كمكتملة' : 'Mark as completed')}
+              >
+                {task.status === 'completed' ? (
+                  <CheckCircle2 className={`w-5 h-5 ${theme.textAccent}`} />
+                ) : (
+                  <Circle className={`w-5 h-5 text-white/40 hover:${theme.textAccent} transition-colors`} />
+                )}
+              </button>
+
+              <div className="flex-1 min-w-0">
+                <h4 className={`text-sm font-bold leading-snug ${task.status === 'completed' ? 'line-through text-white/40' : 'text-white'}`}>
+                  {task.title}
+                </h4>
+                {task.notes && (
+                  <p className={`text-xs mt-1 leading-relaxed ${task.status === 'completed' ? 'line-through text-white/30' : 'text-white/60'}`}>
+                    {task.notes}
+                  </p>
+                )}
+                {task.due && (
+                  <div className={`flex items-center gap-1 mt-2 text-[10px] ${theme.textAccent} font-mono`}>
+                    <Calendar className="w-3 h-3" />
+                    <span>{isAr ? 'تاريخ الاستحقاق:' : 'Due date:'} {new Date(task.due).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}</span>
+                  </div>
+                )}
+                {/* [STUDY TOOLS] Learn buttons — chat tutor + in-page voice tutor.
+                    Their own ALWAYS-VISIBLE row inside the card (owner request):
+                    EVERY task — manual or AI-made, any user, any device — gets
+                    the same learning tools; they can never be squeezed away. */}
+                <div className="flex items-center gap-2 mt-2.5">
+                  <button
+                    onClick={() => onAction?.(isAr
+                      ? `🎓 وضع التعلم التفاعلي — درس في: «${task.title}»${task.notes ? `\n(${task.notes})` : ''}`
+                      : `🎓 Interactive learning mode — lesson on: "${task.title}"${task.notes ? `\n(${task.notes})` : ''}`
+                    )}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 rounded-lg transition-all cursor-pointer"
+                    title={isAr ? 'تعلم بالمحادثة — THOTH يشرح ويسألك أسئلة' : 'Learn in chat — THOTH teaches & quizzes you'}
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'تعلم' : 'Learn'}</span>
+                  </button>
+                  <button
+                    onClick={() => onVoiceLearn?.(task.title + (task.notes ? ` — ${task.notes}` : ''))}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-purple-300 hover:text-purple-200 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/25 rounded-lg transition-all cursor-pointer"
+                    title={isAr ? 'درس صوتي داخل صفحة المهام' : 'Voice lesson right here in Tasks'}
+                  >
+                    <Volume2 className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'صوت' : 'Voice'}</span>
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={() => onAction?.(isAr 
+                  ? `كيف يمكنني إنجاز هذه المهمة بشكل أفضل؟ \nالمهمة: ${task.title}${task.notes ? '\nملاحظات: ' + task.notes : ''}`
+                  : `How can I accomplish this task more effectively? \nTask: ${task.title}${task.notes ? '\nNotes: ' + task.notes : ''}`
+                )}
+                className="opacity-0 group-hover:opacity-100 p-1.5 text-white/30 hover:text-blue-400 hover:bg-white/10 rounded-lg transition-all"
+                title={isAr ? 'مساعدة من الذكاء الاصطناعي' : 'AI Task Assistant'}
+              >
+                <Sparkles className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => requestDeleteTask(task)}
+                className="opacity-0 group-hover:opacity-100 p-1.5 text-white/30 hover:text-red-400 hover:bg-white/10 rounded-lg transition-all"
+                title={isAr ? 'حذف المهمة' : 'Delete Task'}
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+  );
+
   return (
     <div 
       className="flex flex-col w-full h-full pb-28 pt-20 px-3 sm:px-6 md:px-8 max-w-3xl mx-auto overflow-y-auto hide-scrollbar"
@@ -788,83 +899,67 @@ export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
             </p>
           </div>
         ) : (
-          filteredTasks.map(task => (
-            <div
-              key={task.id}
-              className={`p-4 rounded-2xl border transition-all flex items-start gap-3 group ${task.status === 'completed' ? 'bg-white/5 border-white/5 text-white/40 opacity-70' : 'bg-white/5 border-white/10 text-white hover:bg-white/[0.08] hover:border-white/20 shadow-lg'}`}
-            >
-              <button
-                onClick={() => handleToggleTask(task)}
-                className="mt-0.5 shrink-0 transition-transform active:scale-90"
-                title={task.status === 'completed' ? (isAr ? 'تحديد كغير مكتملة' : 'Mark as incomplete') : (isAr ? 'تحديد كمكتملة' : 'Mark as completed')}
-              >
-                {task.status === 'completed' ? (
-                  <CheckCircle2 className={`w-5 h-5 ${theme.textAccent}`} />
-                ) : (
-                  <Circle className={`w-5 h-5 text-white/40 hover:${theme.textAccent} transition-colors`} />
-                )}
-              </button>
-
-              <div className="flex-1 min-w-0">
-                <h4 className={`text-sm font-bold leading-snug ${task.status === 'completed' ? 'line-through text-white/40' : 'text-white'}`}>
-                  {task.title}
-                </h4>
-                {task.notes && (
-                  <p className={`text-xs mt-1 leading-relaxed ${task.status === 'completed' ? 'line-through text-white/30' : 'text-white/60'}`}>
-                    {task.notes}
-                  </p>
-                )}
-                {task.due && (
-                  <div className={`flex items-center gap-1 mt-2 text-[10px] ${theme.textAccent} font-mono`}>
-                    <Calendar className="w-3 h-3" />
-                    <span>{isAr ? 'تاريخ الاستحقاق:' : 'Due date:'} {new Date(task.due).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}</span>
+          <>
+            {planGroups.map((g, gi) => {
+              const open = expandedPlans[g.name] !== undefined ? expandedPlans[g.name] : gi === 0;
+              const pct = Math.round((g.counts.done / Math.max(1, g.counts.total)) * 100);
+              return (
+              <div key={`plan-${g.name}`} className={`rounded-2xl border overflow-hidden transition-all shadow-lg ${open ? 'border-emerald-400/30 bg-gradient-to-br from-emerald-500/10 via-transparent to-purple-500/10' : 'border-white/10 bg-white/5 hover:bg-white/[0.08]'}`}>
+                <button
+                  onClick={() => setExpandedPlans(prev => ({ ...prev, [g.name]: !open }))}
+                  className="w-full p-4 flex items-center gap-3 cursor-pointer"
+                  title={isAr ? 'اضغط لفتح أو إغلاق درس المهام' : 'Click to expand or collapse the course'}
+                >
+                  <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-400/25 flex items-center justify-center shrink-0">
+                    <GraduationCap className="w-[18px] h-[18px] text-emerald-300" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h4 className="text-sm font-black text-white truncate">{g.name}</h4>
+                    <p className="text-[11px] text-white/45 mt-0.5">
+                      {isAr
+                        ? `اكتمل ${g.counts.done} من ${g.counts.total} مهمة${g.counts.done === g.counts.total ? ' — خلصت الدرس كله 🎉' : ''}`
+                        : `${g.counts.done} of ${g.counts.total} done${g.counts.done === g.counts.total ? ' — course finished 🎉' : ''}`}
+                    </p>
+                    <div className="h-1 mt-1.5 rounded-full bg-white/10 overflow-hidden">
+                      <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400" style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                  <ChevronDown className={`w-4 h-4 text-white/40 transition-transform shrink-0 ${open ? 'rotate-180' : ''}`} />
+                </button>
+                {open && (
+                  <div className="px-2.5 pb-3 flex flex-col gap-2.5">
+                    <div className="flex items-center justify-between gap-2 px-1 pt-1">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => onAction?.(isAr
+                            ? `🎓 وضع التعلم التفاعلي — درس في: «${g.name}»`
+                            : `🎓 Interactive learning mode — lesson on: "${g.name}"`
+                          )}
+                          className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 rounded-lg transition-all cursor-pointer"
+                          title={isAr ? 'درس تفاعلي في المادة كلها' : 'Interactive lesson on the whole subject'}
+                        >
+                          <BookOpen className="w-3.5 h-3.5" />
+                          <span>{isAr ? 'درس المادة' : 'Lesson'}</span>
+                        </button>
+                        <button
+                          onClick={() => onVoiceLearn?.(g.name)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-purple-300 hover:text-purple-200 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/25 rounded-lg transition-all cursor-pointer"
+                          title={isAr ? 'درس صوتي في المادة كلها' : 'Voice lesson on the whole subject'}
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span>{isAr ? 'صوت' : 'Voice'}</span>
+                        </button>
+                      </div>
+                      <span className="text-[10px] text-white/30 font-mono">{g.tasks.length} {isAr ? 'مهمة' : 'tasks'}</span>
+                    </div>
+                    {g.tasks.map(renderTaskCard)}
                   </div>
                 )}
-                {/* [STUDY TOOLS] Learn buttons — chat tutor + in-page voice tutor.
-                    Their own ALWAYS-VISIBLE row inside the card (owner request):
-                    EVERY task — manual or AI-made, any user, any device — gets
-                    the same learning tools; they can never be squeezed away. */}
-                <div className="flex items-center gap-2 mt-2.5">
-                  <button
-                    onClick={() => onAction?.(isAr
-                      ? `🎓 وضع التعلم التفاعلي — درس في: «${task.title}»${task.notes ? `\n(${task.notes})` : ''}`
-                      : `🎓 Interactive learning mode — lesson on: "${task.title}"${task.notes ? `\n(${task.notes})` : ''}`
-                    )}
-                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 rounded-lg transition-all cursor-pointer"
-                    title={isAr ? 'تعلم بالمحادثة — THOTH يشرح ويسألك أسئلة' : 'Learn in chat — THOTH teaches & quizzes you'}
-                  >
-                    <BookOpen className="w-3.5 h-3.5" />
-                    <span>{isAr ? 'تعلم' : 'Learn'}</span>
-                  </button>
-                  <button
-                    onClick={() => onVoiceLearn?.(task.title + (task.notes ? ` — ${task.notes}` : ''))}
-                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-purple-300 hover:text-purple-200 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/25 rounded-lg transition-all cursor-pointer"
-                    title={isAr ? 'درس صوتي داخل صفحة المهام' : 'Voice lesson right here in Tasks'}
-                  >
-                    <Volume2 className="w-3.5 h-3.5" />
-                    <span>{isAr ? 'صوت' : 'Voice'}</span>
-                  </button>
-                </div>
               </div>
-              <button
-                onClick={() => onAction?.(isAr 
-                  ? `كيف يمكنني إنجاز هذه المهمة بشكل أفضل؟ \nالمهمة: ${task.title}${task.notes ? '\nملاحظات: ' + task.notes : ''}`
-                  : `How can I accomplish this task more effectively? \nTask: ${task.title}${task.notes ? '\nNotes: ' + task.notes : ''}`
-                )}
-                className="opacity-0 group-hover:opacity-100 p-1.5 text-white/30 hover:text-blue-400 hover:bg-white/10 rounded-lg transition-all"
-                title={isAr ? 'مساعدة من الذكاء الاصطناعي' : 'AI Task Assistant'}
-              >
-                <Sparkles className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => requestDeleteTask(task)}
-                className="opacity-0 group-hover:opacity-100 p-1.5 text-white/30 hover:text-red-400 hover:bg-white/10 rounded-lg transition-all"
-                title={isAr ? 'حذف المهمة' : 'Delete Task'}
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          ))
+              );
+            })}
+            {standaloneTasks.map(renderTaskCard)}
+          </>
         )}
       </div>
       </>)}
