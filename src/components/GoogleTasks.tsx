@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { 
   CheckCircle2, Circle, Plus, Trash2, Calendar, RefreshCw, 
   ListTodo, Check, Sparkles, Filter, AlertCircle, ChevronDown, 
-  ExternalLink, LogIn, Edit2, AlarmClock, CalendarDays, BookOpen, Volume2
+  ExternalLink, LogIn, Edit2, AlarmClock, CalendarDays, BookOpen, Volume2, GraduationCap
 } from 'lucide-react';
 import { AlarmsView, CalendarView } from './StudyTools';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from 'firebase/auth';
@@ -65,6 +65,12 @@ export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
   const [newTaskNotes, setNewTaskNotes] = useState('');
   const [newTaskDue, setNewTaskDue] = useState('');
   const [isAddingTask, setIsAddingTask] = useState(false);
+
+  // [STUDY TOOLS] Owner request: dedicated "start learning plan" option on
+  // the Tasks page — no need to type "اعمل خطه" in chat anymore.
+  const [isPlanningLearn, setIsPlanningLearn] = useState(false);
+  const [learnTopic, setLearnTopic] = useState('');
+  const [learnDuration, setLearnDuration] = useState('');
 
   // New list state
   const [newListTitle, setNewListTitle] = useState('');
@@ -278,6 +284,26 @@ export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
   };
 
   // Add a new task
+  // [STUDY TOOLS] Start a full learning plan straight from the Tasks page
+  // (owner request): composes the planning request and hands it to chat via
+  // onAction — the existing THOTH_TASK pipeline parses the reply and fills
+  // this page automatically. NOTE: deliberately does NOT start with 🎓 and
+  // never says "وضع التعلم التفاعلي" so the chat PLANS a course instead of
+  // entering the interactive tutor lesson mode.
+  const handleStartLearnPlan = (e: React.FormEvent) => {
+    e.preventDefault();
+    const topic = learnTopic.trim();
+    if (!topic || !onAction) return;
+    const duration = learnDuration.trim();
+    const msg = isAr
+      ? `عايز أتعلم «${topic}»${duration ? ` — المدة المتاحة: ${duration}` : ' — اختار أنت المدة المناسبة للموضوع واذكرها في أول ردك'}. اعمل لي خطة تعلم واسعة وشاملة تغطي الموضوع تغطية كاملة ومتدرجة: أساسيات ثم بناء المفاهيم والتوسع فيها ثم تطبيق وتمارين عملية ثم مراجعات دورية ثم تقييم نهائي، موزعة على أيام بأوقات دراسية مناسبة وتبدأ من تاريخ اليوم.`
+      : `I want to learn "${topic}"${duration ? ` — available time: ${duration}` : ' — pick a suitable duration yourself and state it at the start'}. Build me a broad, comprehensive learning plan covering the topic fully and progressively: foundations, concept building, practical exercises, periodic reviews and a final assessment, spread across days with suitable study times starting today.`;
+    onAction(msg);
+    setIsPlanningLearn(false);
+    setLearnTopic('');
+    setLearnDuration('');
+  };
+
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTaskTitle.trim()) return;
@@ -614,6 +640,60 @@ export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
         )}
       </div>
 
+      {/* [STUDY TOOLS] Owner request: dedicated "ابدأ خطة تعلم" option — one
+          tap asks THOTH for a full learning plan (auto-lands in Tasks page),
+          no need to type "اعمل خطه" in chat anymore. */}
+      {!isPlanningLearn ? (
+        <button
+          onClick={() => setIsPlanningLearn(true)}
+          className="mb-5 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-gradient-to-r from-emerald-500/15 via-teal-500/15 to-purple-500/15 border border-emerald-400/30 hover:border-emerald-400/50 shadow-lg active:scale-[0.99] transition-all cursor-pointer"
+        >
+          <GraduationCap className="w-5 h-5 text-emerald-300" />
+          <span className="text-sm font-black text-emerald-200">{isAr ? 'ابدأ خطة تعلم — اختار موضوع وسيب الباقي على THOTH' : 'Start a learning plan — pick a topic, THOTH does the rest'}</span>
+        </button>
+      ) : (
+        <form onSubmit={handleStartLearnPlan} className="mb-5 p-5 rounded-2xl bg-gradient-to-br from-emerald-500/10 via-transparent to-purple-500/10 border border-emerald-400/25 shadow-xl backdrop-blur-xl flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <GraduationCap className="w-4 h-4 text-emerald-300" />
+            <h4 className="text-sm font-black text-white">{isAr ? 'خطة تعلم جديدة' : 'New learning plan'}</h4>
+          </div>
+          <input
+            type="text"
+            placeholder={isAr ? 'عايز تتعلم إيه؟ مثلاً: الإنجليزية، البرمجة، الفيزياء...' : 'What do you want to learn? e.g. English, coding, physics...'}
+            value={learnTopic}
+            onChange={e => setLearnTopic(e.target.value)}
+            className="bg-transparent text-white font-bold text-sm outline-none placeholder:text-white/30"
+            autoFocus
+          />
+          <input
+            type="text"
+            placeholder={isAr ? 'المدة المتاحة (اختياري) — مثلاً: أسبوعين، قبل 20 سبتمبر...' : 'Available time (optional) — e.g. two weeks, before Sep 20...'}
+            value={learnDuration}
+            onChange={e => setLearnDuration(e.target.value)}
+            className="bg-transparent text-white text-xs outline-none placeholder:text-white/30"
+          />
+          <div className="flex items-center gap-2 pt-3 border-t border-white/10">
+            <button
+              type="submit"
+              disabled={!learnTopic.trim()}
+              className={`px-4 py-2 rounded-xl ${theme.btnPrimary} text-xs font-black shadow-lg active:scale-95 transition-all disabled:opacity-40 disabled:active:scale-100`}
+            >
+              {isAr ? 'اعمل الخطة وابدأ' : 'Build plan & start'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsPlanningLearn(false)}
+              className="px-3 py-2 rounded-xl bg-white/10 text-white/70 hover:text-white text-xs font-bold hover:bg-white/20 transition-all"
+            >
+              {isAr ? 'إلغاء' : 'Cancel'}
+            </button>
+          </div>
+          <p className="text-[10px] text-white/40 leading-relaxed">
+            {isAr ? 'الرد هيوصلك في الشات والخطة هتتنزل تلقائيًا هنا في صفحة المهام — وكل مهمة هتلاقي جنبها زر تعلم وزر درس صوتي.' : 'The reply lands in chat and the plan auto-fills this Tasks page — every task gets its own Learn and Voice lesson buttons.'}
+          </p>
+        </form>
+      )}
+
       {/* Task Filters & Add Button */}
       <div className="flex items-center justify-between gap-3 mb-6">
         <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/10 text-xs">
@@ -740,29 +820,32 @@ export function GoogleTasks({ onAction, onVoiceLearn }: GoogleTasksProps) {
                     <span>{isAr ? 'تاريخ الاستحقاق:' : 'Due date:'} {new Date(task.due).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}</span>
                   </div>
                 )}
+                {/* [STUDY TOOLS] Learn buttons — chat tutor + in-page voice tutor.
+                    Their own ALWAYS-VISIBLE row inside the card (owner request):
+                    EVERY task — manual or AI-made, any user, any device — gets
+                    the same learning tools; they can never be squeezed away. */}
+                <div className="flex items-center gap-2 mt-2.5">
+                  <button
+                    onClick={() => onAction?.(isAr
+                      ? `🎓 وضع التعلم التفاعلي — درس في: «${task.title}»${task.notes ? `\n(${task.notes})` : ''}`
+                      : `🎓 Interactive learning mode — lesson on: "${task.title}"${task.notes ? `\n(${task.notes})` : ''}`
+                    )}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 rounded-lg transition-all cursor-pointer"
+                    title={isAr ? 'تعلم بالمحادثة — THOTH يشرح ويسألك أسئلة' : 'Learn in chat — THOTH teaches & quizzes you'}
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'تعلم' : 'Learn'}</span>
+                  </button>
+                  <button
+                    onClick={() => onVoiceLearn?.(task.title + (task.notes ? ` — ${task.notes}` : ''))}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-purple-300 hover:text-purple-200 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/25 rounded-lg transition-all cursor-pointer"
+                    title={isAr ? 'درس صوتي داخل صفحة المهام' : 'Voice lesson right here in Tasks'}
+                  >
+                    <Volume2 className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'صوت' : 'Voice'}</span>
+                  </button>
+                </div>
               </div>
-
-              {/* [STUDY TOOLS] Learn buttons — chat tutor + in-page voice tutor.
-                  Always visible (owner request): two buttons ON the task. */}
-              <button
-                onClick={() => onAction?.(isAr
-                  ? `🎓 وضع التعلم التفاعلي — درس في: «${task.title}»${task.notes ? `\n(${task.notes})` : ''}`
-                  : `🎓 Interactive learning mode — lesson on: "${task.title}"${task.notes ? `\n(${task.notes})` : ''}`
-                )}
-                className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-bold text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 rounded-lg transition-all cursor-pointer shrink-0"
-                title={isAr ? 'تعلم بالمحادثة — THOTH يشرح ويسألك أسئلة' : 'Learn in chat — THOTH teaches & quizzes you'}
-              >
-                <BookOpen className="w-3.5 h-3.5" />
-                <span>{isAr ? 'تعلم' : 'Learn'}</span>
-              </button>
-              <button
-                onClick={() => onVoiceLearn?.(task.title)}
-                className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-bold text-purple-300 hover:text-purple-200 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/25 rounded-lg transition-all cursor-pointer shrink-0"
-                title={isAr ? 'درس صوتي داخل صفحة المهام' : 'Voice lesson right here in Tasks'}
-              >
-                <Volume2 className="w-3.5 h-3.5" />
-                <span>{isAr ? 'صوت' : 'Voice'}</span>
-              </button>
               <button
                 onClick={() => onAction?.(isAr 
                   ? `كيف يمكنني إنجاز هذه المهمة بشكل أفضل؟ \nالمهمة: ${task.title}${task.notes ? '\nملاحظات: ' + task.notes : ''}`
