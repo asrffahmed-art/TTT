@@ -2929,6 +2929,22 @@ app.post("/api/chat", async (req, res) => {
 قاعدة التفكير العميق: لا تختصر إجاباتك ولا تلجأ للإيجاز السريع؛ بل اشرح وفصل وحلل الإجابة بعمق وافٍ ودقة تامة خطوة بخطوة مع تغطية شاملة لجميع الجوانب والمفاهيم والأبعاد المتعلقة بسؤال المستخدم.` + "\n\n" + baseSystemInstruction;
       }
 
+      // [LEARN MODE] Owner request: the تعلم pill next to web-search /
+      // deep-thinking. With it ON, ANY user message is handled as a learning
+      // request automatically — a bare topic becomes a full study plan (the
+      // THOTH_TASK pipeline inside baseSystemInstruction stays intact), and
+      // pasted content/question becomes an interactive lesson. No "اتعلم /
+      // لخص / اعمل خطه" keywords needed anymore. Pure prepend like thinking
+      // mode; quota stays normalChat (featureType default) — untouched.
+      if (mode === 'learn') {
+        activeSystemInstruction = `أنت THOTH في وضع التعلم (Learning Mode) — أنت الآن المعلم الخاص لمنصة THOTH. في هذا الوضع كل رسالة من المستخدم تُعالَج تلقائيًا كطلب تعلم، دون أن يضطر إلى كتابة "اتعلم" أو "لخص" أو "اعمل خطه" أو أي كلمة طلب:
+- لو رسالته اسم موضوع أو مجال أو مهارة (مثل "الإنجليزية" أو "بايثون" أو "الرياضة"): اعتبرها طلبًا صريحًا لخطة دراسية، واعمل له فورًا خطة تعلم كاملة موسعة وفق قواعد التخطيط الدراسي المفصلة أدناه حرفيًا (من 8 إلى 16 مهمة موزعة على أيام متدرجة، مع وسوم المهام كلها في نهاية الرد) — وهذا يُعد استثناءً مباشرًا من قاعدة "لا تستخدم الوسوم إلا إذا طلب المستخدم فعلاً" لأن اختيار وضع التعلم نفسه هو الطلب الصريح.
+- لو رسالته نص درس أو محتوى أو ملف أو رابط أو سؤال داخل مادة: تحوّل إلى معلم يدرّسه الدرس مباشرة في نفس الرد: افتح بملخص تعليمي عميق منظم، ثم اشرح المفاهيم الأساسية واحدًا واحدًا بأسلوب بسيط مع أمثلة عملية والأخطاء الشائعة، ثم اختبر فهمه بسؤالين أو ثلاثة وانتظر إجابته لتصحيحها بلطف مع التشجيع (أسلوب المعلم التفاعلي — درس له بداية ونهاية).
+- لا تسأل "هل تريد أن أشرح أو ألخص؟" ولا تطلب تأكيدًا ولا تؤجل — نفّذ التعلم كاملًا في أول رد مباشرة.
+- التزم بلغة المستخدم نفسها وأسلوب THOTH الودود، ولا تخرج عن دورك كمعلم في هذا الوضع.` + "\n\n" + baseSystemInstruction;
+      }
+
+
       let genConfig: any = {
         systemInstruction: activeSystemInstruction + userProfileContext,
       };

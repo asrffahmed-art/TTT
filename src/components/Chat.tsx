@@ -1,5 +1,5 @@
 import { Discover } from './Discover';
-import { Mic, Send, ListTodo, Loader2, Volume2, Copy, Check, Trash2, Plus, MicOff, Clock, ThumbsUp, ThumbsDown, RotateCcw, Bot, Sparkles, CheckCheck, Bookmark, Zap, Brain, Globe, Radio, X, VolumeX, Edit3, BookOpen, HardDrive, AlertTriangle, ImageIcon, FileText, Download, Paperclip, Code, Share2, Video, Film, FileVideo, History as HistoryIcon, PanelLeftOpen, PanelLeftClose, Menu, Pin, Edit2, Search, MessageSquare, Maximize2 } from 'lucide-react';
+import { Mic, Send, ListTodo, Loader2, Volume2, Copy, Check, Trash2, Plus, MicOff, Clock, ThumbsUp, ThumbsDown, RotateCcw, Bot, Sparkles, CheckCheck, Bookmark, Zap, Brain, Globe, Radio, X, VolumeX, Edit3, BookOpen, HardDrive, AlertTriangle, ImageIcon, FileText, Download, Paperclip, Code, Share2, Video, Film, FileVideo, History as HistoryIcon, PanelLeftOpen, PanelLeftClose, Menu, Pin, Edit2, Search, MessageSquare, Maximize2, GraduationCap } from 'lucide-react';
 import { useLanguage } from '../lib/LanguageContext';
 import { useState, useEffect, useRef } from 'react';
 import React from 'react';
@@ -143,7 +143,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       window.removeEventListener('thoth_auth_changed', handleAuthChange);
     };
   }, [isAuthenticated]);
-  const [selectedMode, setSelectedMode] = useState<'fast' | 'thinking' | 'web_search' | 'image' | 'audio_summary'>('fast');
+  const [selectedMode, setSelectedMode] = useState<'fast' | 'thinking' | 'web_search' | 'image' | 'audio_summary' | 'learn'>('fast');
   const [showPlusMenu, setShowPlusMenu] = useState<boolean>(false);
   const plusMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2879,6 +2879,23 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                   </div>
                 ) : 
 
+                /* 4.5 Learn Mode Animation */
+                selectedMode === 'learn' ? (
+                  <div className="flex items-center gap-3 py-1">
+                    <div className="p-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
+                      <GraduationCap className="w-4 h-4 text-emerald-400 animate-pulse" />
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-xs font-semibold text-emerald-300 animate-pulse">
+                        {isAr ? 'THOTH بيجهز درسك وخطته التعليمية...' : 'THOTH is preparing your lesson & plan...'}
+                      </span>
+                      <span className="text-[10px] text-white/40">
+                        {isAr ? 'وضع التعلم — شرح وتفاعل ومهام' : 'Learn mode — teach, interact, tasks'}
+                      </span>
+                    </div>
+                  </div>
+                ) :
+
                 /* 5. Fast Response Animation */
                 (
                   <div className="flex items-center gap-3 py-1">
@@ -2952,6 +2969,25 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                   <span>{isAr ? 'بحث الويب' : 'Web Search'}</span>
                 </button>
               )}
+
+              {/* [LEARN MODE] Owner request: a dedicated learn pill next to web
+                  search / deep thinking — with it ON, ANY message is handled as
+                  a learning request automatically (topic -> full study plan
+                  with tasks; content -> interactive lesson). No need to type
+                  "اتعلم" or "لخص" anymore. Open to everyone; server counts it
+                  as a normal chat call. */}
+              <button
+                type="button"
+                onClick={() => setSelectedMode('learn')}
+                className={`flex items-center gap-1.5 py-1 px-3 rounded-full text-xs font-semibold transition-all shrink-0 ${
+                  selectedMode === 'learn'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+                    : 'bg-white/5 text-white/60 hover:text-white hover:bg-white/10 border border-transparent'
+                }`}
+              >
+                <GraduationCap className="w-3 h-3 text-emerald-400" />
+                <span>{isAr ? 'تعلم' : 'Learn'}</span>
+              </button>
 
               <button
                 type="button"
@@ -3222,7 +3258,9 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                         ? (isAr ? "اسأل THOTH أي شيء..." : "Ask THOTH anything...")
                         : selectedMode === 'thinking'
                           ? (isAr ? "🧠 اطرح مسألة معقدة للتفكير العميق المفصل..." : "🧠 Ask a complex question for deep reasoning...")
-                          : (isAr ? "🌐 ابحث عن أي شيء في الويب..." : "🌐 Search anything across the web...")
+                          : selectedMode === 'learn'
+                            ? (isAr ? "🎓 اكتب أي موضوع أو الصق درس... وTHOTH يشرحه ويعمل خطته من غير كلمة زيادة" : "🎓 Type a topic or paste a lesson... THOTH teaches & plans it instantly")
+                            : (isAr ? "🌐 ابحث عن أي شيء في الويب..." : "🌐 Search anything across the web...")
               }  
               value={input}
               onChange={(e) => setInput(e.target.value)}
