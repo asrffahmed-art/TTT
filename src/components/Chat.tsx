@@ -2647,6 +2647,21 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                   </div>
                 )}
                 
+                {/* [Task 34] Owner request: when this reply created tasks (a study
+                    plan), show a jump button straight to the Tasks page where
+                    the plan now lives grouped as one course. Render-time text
+                    detection — zero data-model changes, works for old messages. */}
+                {!msg.isUser && msg.text && /📋 \*\*(تمت إضافة|Added)/.test(msg.text) && (
+                  <button
+                    onClick={() => onNavigate?.('tasks')}
+                    className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500/15 via-teal-500/15 to-purple-500/15 border border-emerald-400/30 hover:border-emerald-400/50 text-emerald-200 text-xs font-black shadow-lg active:scale-[0.98] transition-all cursor-pointer"
+                    title={isAr ? 'فتح صفحة المهام' : 'Open the Tasks page'}
+                  >
+                    <ListTodo className="w-4 h-4 text-emerald-300" />
+                    <span>{isAr ? 'افتح صفحة المهام — خطتك متجمعة هناك كدرس واحد 🗂️' : 'Open the Tasks page — your plan is grouped there as one course'}</span>
+                  </button>
+                )}
+
                 {/* THOTH Actions Footer for messages */}
                 <div className="flex items-center justify-between gap-2 mt-3 pt-2 border-t border-white/10 text-white/50 text-xs">
                   <div className="flex items-center gap-1 text-[10px] text-white/50 font-medium">
