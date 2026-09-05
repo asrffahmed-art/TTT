@@ -1740,342 +1740,371 @@ export function AdminPanel({ onClose }: AdminPanelProps) {
     <div className="flex flex-col w-full h-full pb-28 pt-20 px-3 sm:px-6 md:px-8 max-w-5xl mx-auto overflow-y-auto hide-scrollbar">
       
       {/* Top Header Card */}
-      <div className="p-6 bg-gradient-to-r from-purple-900/40 via-indigo-900/30 to-black/40 backdrop-blur-xl rounded-3xl border border-purple-500/30 mb-6 shadow-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-500 to-pink-500 text-white flex items-center justify-center shadow-lg border border-white/20 shrink-0">
-            <ShieldCheck className="w-8 h-8 animate-pulse" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-white">لوحة تحكم الأدمن المطلقة</h1>
-              <span className="px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-extrabold">
-                تحكم كامل بالمستخدمين وقواعد البيانات
-              </span>
+      <div className="relative mb-6 p-[1.5px] rounded-[1.7rem] bg-gradient-to-l from-purple-500/60 via-fuchsia-500/25 to-indigo-500/60 shadow-2xl shadow-purple-950/40">
+        <div className="absolute -top-12 -right-12 w-44 h-44 rounded-full bg-purple-600/20 blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-14 -left-10 w-44 h-44 rounded-full bg-indigo-600/15 blur-3xl pointer-events-none" />
+        <div className="relative p-6 bg-[#0b0716]/95 backdrop-blur-2xl rounded-[calc(1.7rem-1.5px)] flex flex-col sm:flex-row sm:items-center justify-between gap-4 overflow-hidden">
+          <div className="flex items-center gap-4">
+            <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 via-fuchsia-600 to-pink-600 text-white flex items-center justify-center shadow-lg shadow-purple-900/60 border border-white/20 shrink-0">
+              <ShieldCheck className="w-8 h-8" />
+              <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#0b0716] animate-pulse" />
             </div>
-            <p className="text-xs text-white/60 mt-1">
-              إدارة الحسابات، الأوسمة، قواعد الذكاء الاصطناعي، صيانة Firestore، والبث الجماعي
-            </p>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-xl font-black text-white tracking-tight">لوحة تحكم الأدمن المطلقة</h1>
+                <span className="px-2.5 py-0.5 rounded-full bg-purple-500/15 text-purple-200 border border-purple-400/40 text-[10px] font-extrabold tracking-wide">
+                  تحكم كامل بالمستخدمين وقواعد البيانات
+                </span>
+              </div>
+              <p className="text-xs text-white/50 mt-1">
+                إدارة الحسابات، الأوسمة، قواعد الذكاء الاصطناعي، صيانة Firestore، والبث الجماعي
+              </p>
+            </div>
           </div>
-        </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              fetchStats();
-              if (activeTab === 'users') fetchUsers();
-              if (activeTab === 'content') fetchContent();
-              if (activeTab === 'broadcast') fetchBroadcastLogs();
-              if (activeTab === 'ai_config') fetchAiConfig();
-              if (activeTab === 'config') fetchSysConfig();
-            }}
-            disabled={isLoadingStats}
-            className="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all border border-white/10 cursor-pointer"
-            title="تحديث البيانات"
-          >
-            <RefreshCw className={`w-4 h-4 ${isLoadingStats ? 'animate-spin' : ''}`} />
-          </button>
-          {onClose && (
+          <div className="flex items-center gap-2">
             <button
-              onClick={onClose}
-              className="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all border border-white/10 cursor-pointer"
-              title="إغلاق"
+              onClick={() => {
+                fetchStats();
+                if (activeTab === 'users') fetchUsers();
+                if (activeTab === 'content') fetchContent();
+                if (activeTab === 'broadcast') fetchBroadcastLogs();
+                if (activeTab === 'ai_config') fetchAiConfig();
+                if (activeTab === 'config') fetchSysConfig();
+              }}
+              disabled={isLoadingStats}
+              className="p-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.14] text-white transition-all border border-white/10 hover:border-white/25 cursor-pointer"
+              title="تحديث البيانات"
             >
-              <X className="w-4 h-4" />
+              <RefreshCw className={`w-4 h-4 ${isLoadingStats ? 'animate-spin' : ''}`} />
             </button>
-          )}
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.14] text-white transition-all border border-white/10 hover:border-white/25 cursor-pointer"
+                title="إغلاق"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Tabs Navigation Header */}
-      <div className="flex flex-wrap items-center gap-2 pb-2 mb-6">
-        <button
-          onClick={() => setActiveTab('overview')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'overview'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Activity className="w-4 h-4" />
-          <span>الملخص والتحليلات</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('ai_insights')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'ai_insights'
-              ? 'bg-emerald-600/40 text-emerald-300 border-emerald-500/60 shadow-lg ring-1 ring-emerald-500/50'
-              : 'bg-emerald-950/40 text-emerald-300/80 hover:bg-emerald-900/40 border-emerald-500/30'
-          }`}
-        >
-          <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
-          <span>التحليل الذكي والبحث الدلالي (AI Insights)</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('ai_monitoring')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'ai_monitoring'
-              ? 'bg-purple-600/40 text-purple-300 border-purple-500/60 shadow-lg ring-1 ring-purple-500/50'
-              : 'bg-purple-950/40 text-purple-300/80 hover:bg-purple-900/40 border-purple-500/30'
-          }`}
-        >
-          <Activity className="w-4 h-4 text-purple-400" />
-          <span>استهلاك ومراقبة الذكاء الاصطناعي (AI Monitoring)</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('users')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'users'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          <span>المستخدمين والحسابات ({stats?.totalUsers ?? 0})</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('storage')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'storage'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <HardDrive className="w-4 h-4 text-purple-400" />
-          <span>مراقبة التخزين</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('plans')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'plans'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Crown className="w-4 h-4 text-amber-400" />
-          <span>إدارة الخطط والأسعار</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('promo_codes')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'promo_codes'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Gift className="w-4 h-4 text-pink-400" />
-          <span>أكواد الاسترداد والخصم</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('payment_orders')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'payment_orders'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <CreditCard className="w-4 h-4 text-emerald-400" />
-          <span>طلبات الدفع (Paymob)</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('content')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'content'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <FileText className="w-4 h-4" />
-          <span>إدارة الأخبار والمحتوى</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('broadcast')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'broadcast'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Megaphone className="w-4 h-4" />
-          <span>البث الجماعي الفوري</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('ai_config')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'ai_config'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Bot className="w-4 h-4" />
-          <span>قواعد الذكاء الاصطناعي</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('db_tools')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'db_tools'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <HardDrive className="w-4 h-4" />
-          <span>صيانة قاعدة البيانات</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('api_keys')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'api_keys'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Lock className="w-4 h-4 text-amber-400" />
-          <span>مفاتيح ومصادر المشروع</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('email_settings')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'email_settings'
-              ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Mail className="w-4 h-4 text-emerald-400" />
-          <span>إدارة البريد و Resend</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('advertising')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'advertising'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Megaphone className="w-4 h-4 text-purple-400" />
-          <span>الإعلانات والتحليلات الإعلانية</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('legal')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'legal'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          <span>الشروط والسياسات القانونية</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('audio_diagnostics')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'audio_diagnostics'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Volume2 className="w-4 h-4" />
-          <span>Audio Diagnostics</span>
-        </button>
-
-
-        <button
-          onClick={() => setActiveTab('training_models')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'training_models'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Sparkles className="w-4 h-4 text-purple-400" />
-          <span>تدريب النماذج والبيانات</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('system_logs')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'system_logs'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Activity className="w-4 h-4 text-emerald-400" />
-          <span>سجلات وأحداث النظام</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('config')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 border cursor-pointer ${
-            activeTab === 'config'
-              ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-lg'
-              : 'bg-white/5 text-white/60 hover:bg-white/10 border-white/5'
-          }`}
-        >
-          <Sliders className="w-4 h-4" />
-          <span>إعدادات النظام والصيانة</span>
-        </button>
+      {/* Tabs Navigation Header — grouped command bar */}
+      <div className="sticky top-[4.4rem] z-30 mb-6 rounded-2xl bg-[#07040f]/85 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/60 overflow-hidden">
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-l from-transparent via-purple-400/60 to-transparent" />
+        <div className="flex items-stretch overflow-x-auto hide-scrollbar py-2">
+          <div className="flex flex-col gap-1.5 px-3 shrink-0">
+            <span className="text-[9px] font-black uppercase tracking-[0.18em] text-white/30 px-1 leading-none">التحليلات</span>
+            <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveTab('overview')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'overview'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Activity className="w-4 h-4" />
+              <span>الملخص والتحليلات</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('ai_insights')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'ai_insights'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
+              <span>التحليل الذكي والبحث الدلالي (AI Insights)</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('ai_monitoring')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'ai_monitoring'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Activity className="w-4 h-4 text-purple-400" />
+              <span>استهلاك ومراقبة الذكاء الاصطناعي (AI Monitoring)</span>
+            </button>
+            </div>
+          </div>
+          <span className="w-px self-stretch my-1 bg-gradient-to-b from-transparent via-white/15 to-transparent shrink-0" />
+          <div className="flex flex-col gap-1.5 px-3 shrink-0">
+            <span className="text-[9px] font-black uppercase tracking-[0.18em] text-white/30 px-1 leading-none">المستخدمون والمحتوى</span>
+            <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveTab('users')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'users'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>المستخدمين والحسابات ({stats?.totalUsers ?? 0})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('storage')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'storage'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <HardDrive className="w-4 h-4 text-purple-400" />
+              <span>مراقبة التخزين</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('content')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'content'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <FileText className="w-4 h-4" />
+              <span>إدارة الأخبار والمحتوى</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('broadcast')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'broadcast'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Megaphone className="w-4 h-4" />
+              <span>البث الجماعي الفوري</span>
+            </button>
+            </div>
+          </div>
+          <span className="w-px self-stretch my-1 bg-gradient-to-b from-transparent via-white/15 to-transparent shrink-0" />
+          <div className="flex flex-col gap-1.5 px-3 shrink-0">
+            <span className="text-[9px] font-black uppercase tracking-[0.18em] text-white/30 px-1 leading-none">المالية</span>
+            <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveTab('plans')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'plans'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Crown className="w-4 h-4 text-amber-400" />
+              <span>إدارة الخطط والأسعار</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('promo_codes')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'promo_codes'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Gift className="w-4 h-4 text-pink-400" />
+              <span>أكواد الاسترداد والخصم</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('payment_orders')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'payment_orders'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <CreditCard className="w-4 h-4 text-emerald-400" />
+              <span>طلبات الدفع (Paymob)</span>
+            </button>
+            </div>
+          </div>
+          <span className="w-px self-stretch my-1 bg-gradient-to-b from-transparent via-white/15 to-transparent shrink-0" />
+          <div className="flex flex-col gap-1.5 px-3 shrink-0">
+            <span className="text-[9px] font-black uppercase tracking-[0.18em] text-white/30 px-1 leading-none">الذكاء الاصطناعي</span>
+            <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveTab('ai_config')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'ai_config'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Bot className="w-4 h-4" />
+              <span>قواعد الذكاء الاصطناعي</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('training_models')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'training_models'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Sparkles className="w-4 h-4 text-purple-400" />
+              <span>تدريب النماذج والبيانات</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('api_keys')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'api_keys'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Lock className="w-4 h-4 text-amber-400" />
+              <span>مفاتيح ومصادر المشروع</span>
+            </button>
+            </div>
+          </div>
+          <span className="w-px self-stretch my-1 bg-gradient-to-b from-transparent via-white/15 to-transparent shrink-0" />
+          <div className="flex flex-col gap-1.5 px-3 shrink-0">
+            <span className="text-[9px] font-black uppercase tracking-[0.18em] text-white/30 px-1 leading-none">النظام والبنية</span>
+            <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveTab('db_tools')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'db_tools'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <HardDrive className="w-4 h-4" />
+              <span>صيانة قاعدة البيانات</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('email_settings')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'email_settings'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Mail className="w-4 h-4 text-emerald-400" />
+              <span>إدارة البريد و Resend</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('system_logs')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'system_logs'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Activity className="w-4 h-4 text-emerald-400" />
+              <span>سجلات وأحداث النظام</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('config')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'config'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Sliders className="w-4 h-4" />
+              <span>إعدادات النظام والصيانة</span>
+            </button>
+            </div>
+          </div>
+          <span className="w-px self-stretch my-1 bg-gradient-to-b from-transparent via-white/15 to-transparent shrink-0" />
+          <div className="flex flex-col gap-1.5 px-3 shrink-0">
+            <span className="text-[9px] font-black uppercase tracking-[0.18em] text-white/30 px-1 leading-none">الأعمال</span>
+            <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveTab('advertising')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'advertising'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Megaphone className="w-4 h-4 text-purple-400" />
+              <span>الإعلانات والتحليلات الإعلانية</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('legal')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'legal'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span>الشروط والسياسات القانونية</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('audio_diagnostics')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 border cursor-pointer whitespace-nowrap ${
+                activeTab === 'audio_diagnostics'
+                  ? 'bg-gradient-to-l from-purple-600/50 to-indigo-600/40 text-white border-purple-400/60 shadow-lg shadow-purple-950/50 ring-1 ring-purple-400/40'
+                  : 'bg-white/[0.04] text-white/55 hover:text-white hover:bg-white/[0.09] border-white/[0.07] hover:border-white/20'
+              }`}
+            >
+              <Volume2 className="w-4 h-4" />
+              <span>Audio Diagnostics</span>
+            </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* TAB 1: OVERVIEW & STATS */}
       {activeTab === 'overview' && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div className="p-4 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-indigo-400 mb-2">
+            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-indigo-400/40 hover:shadow-xl hover:shadow-indigo-950/30">
+              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-indigo-500/20 blur-2xl transition-all duration-500 group-hover:bg-indigo-500/35 pointer-events-none" />
+              <div className="relative flex items-center justify-between text-indigo-400 mb-2">
                 <Users className="w-5 h-5" />
                 <span className="text-[10px] font-bold uppercase text-white/40">المستخدمين</span>
               </div>
-              <span className="text-2xl font-black text-white">{isLoadingStats ? '...' : stats?.totalUsers ?? 0}</span>
-              <span className="text-[10px] text-white/50 mt-1">حساب مسجل في Firestore</span>
+              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.totalUsers ?? 0}</span>
+              <span className="relative text-[10px] text-white/45 mt-1.5">حساب مسجل في Firestore</span>
             </div>
 
-            <div className="p-4 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-emerald-400 mb-2">
+            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-emerald-400/40 hover:shadow-xl hover:shadow-emerald-950/30">
+              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-emerald-500/20 blur-2xl transition-all duration-500 group-hover:bg-emerald-500/35 pointer-events-none" />
+              <div className="relative flex items-center justify-between text-emerald-400 mb-2">
                 <Radio className="w-5 h-5" />
                 <span className="text-[10px] font-bold uppercase text-white/40">الأجهزة المفعلة</span>
               </div>
-              <span className="text-2xl font-black text-emerald-400">{isLoadingStats ? '...' : stats?.activeTokens ?? 0}</span>
-              <span className="text-[10px] text-white/50 mt-1">FCM Tokens</span>
+              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.activeTokens ?? 0}</span>
+              <span className="relative text-[10px] text-white/45 mt-1.5">FCM Tokens</span>
             </div>
 
-            <div className="p-4 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-red-400 mb-2">
+            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-red-400/40 hover:shadow-xl hover:shadow-red-950/30">
+              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-red-500/20 blur-2xl transition-all duration-500 group-hover:bg-red-500/35 pointer-events-none" />
+              <div className="relative flex items-center justify-between text-red-400 mb-2">
                 <UserX className="w-5 h-5" />
                 <span className="text-[10px] font-bold uppercase text-white/40">الموقوفين</span>
               </div>
-              <span className="text-2xl font-black text-red-400">{isLoadingStats ? '...' : stats?.suspendedUsers ?? 0}</span>
-              <span className="text-[10px] text-white/50 mt-1">حساب موقوف عن العمل</span>
+              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.suspendedUsers ?? 0}</span>
+              <span className="relative text-[10px] text-white/45 mt-1.5">حساب موقوف عن العمل</span>
             </div>
 
-            <div className="p-4 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-pink-400 mb-2">
+            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-pink-400/40 hover:shadow-xl hover:shadow-pink-950/30">
+              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-pink-500/20 blur-2xl transition-all duration-500 group-hover:bg-pink-500/35 pointer-events-none" />
+              <div className="relative flex items-center justify-between text-pink-400 mb-2">
                 <Sparkles className="w-5 h-5" />
                 <span className="text-[10px] font-bold uppercase text-white/40">الإشعارات اليومية</span>
               </div>
-              <span className="text-2xl font-black text-pink-400">{isLoadingStats ? '...' : stats?.totalDailyNotifications ?? 0}</span>
-              <span className="text-[10px] text-white/50 mt-1">ملخص تم إنشاؤه</span>
+              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.totalDailyNotifications ?? 0}</span>
+              <span className="relative text-[10px] text-white/45 mt-1.5">ملخص تم إنشاؤه</span>
             </div>
 
-            <div className="p-4 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-amber-400 mb-2">
+            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-amber-400/40 hover:shadow-xl hover:shadow-amber-950/30">
+              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-amber-500/20 blur-2xl transition-all duration-500 group-hover:bg-amber-500/35 pointer-events-none" />
+              <div className="relative flex items-center justify-between text-amber-400 mb-2">
                 <Megaphone className="w-5 h-5" />
                 <span className="text-[10px] font-bold uppercase text-white/40">البث الجماعي</span>
               </div>
-              <span className="text-2xl font-black text-amber-400">{isLoadingStats ? '...' : stats?.broadcastsCount ?? 0}</span>
-              <span className="text-[10px] text-white/50 mt-1">حملة إشعار جماعي</span>
+              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.broadcastsCount ?? 0}</span>
+              <span className="relative text-[10px] text-white/45 mt-1.5">حملة إشعار جماعي</span>
             </div>
           </div>
 
