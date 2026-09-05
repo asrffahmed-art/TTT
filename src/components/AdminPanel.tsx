@@ -1792,7 +1792,7 @@ export function AdminPanel({ onClose }: AdminPanelProps) {
       </div>
 
       {/* Tabs Navigation Header — grouped command bar */}
-      <div className="sticky top-[4.4rem] z-30 mb-6 rounded-2xl bg-[#07040f]/85 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/60 overflow-hidden">
+      <div className="sticky top-[4.4rem] z-30 mb-6 shrink-0 rounded-2xl bg-[#07040f]/85 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/60 overflow-hidden">
         <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-l from-transparent via-purple-400/60 to-transparent" />
         <div className="flex items-stretch overflow-x-auto hide-scrollbar py-2">
           <div className="flex flex-col gap-1.5 px-3 shrink-0">
