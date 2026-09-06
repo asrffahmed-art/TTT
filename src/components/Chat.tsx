@@ -2922,7 +2922,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                         {isAr ? 'الوكيل الذكي بيحلل طلبك ويبنيه كامل...' : 'Agent is analyzing & building your request...'}
                       </span>
                       <span className="text-[10px] text-white/40">
-                        {isAr ? 'وضع الوكيل — بناء ذاتي لأي حاجة من أول مرة' : 'Agent mode — autonomous one-shot building'}
+                        {isAr ? 'وضع الوكيل — بيبنيلك منتج كامل جاهز (ممكن ياخد من دقيقة لتلات دقايق)' : 'Agent mode — building a full product (1–3 min)'}
                       </span>
                     </div>
                   </div>
