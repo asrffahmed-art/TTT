@@ -143,7 +143,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       window.removeEventListener('thoth_auth_changed', handleAuthChange);
     };
   }, [isAuthenticated]);
-  const [selectedMode, setSelectedMode] = useState<'fast' | 'thinking' | 'web_search' | 'image' | 'audio_summary' | 'learn'>('fast');
+  const [selectedMode, setSelectedMode] = useState<'fast' | 'thinking' | 'web_search' | 'image' | 'audio_summary' | 'learn' | 'agent'>('fast');
   const [showPlusMenu, setShowPlusMenu] = useState<boolean>(false);
   const plusMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1223,8 +1223,8 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           {
             id: Date.now(),
             text: isAr
-              ? `عذراً، لقد نفد رصيد الاستخدام المتاح لـ ${selectedMode === 'web_search' ? 'البحث' : selectedMode === 'thinking' ? 'التفكير' : 'المحادثة'} اليوم. يرجى تسجيل الدخول أو ترقية باقتك لمتابعة استخدام THOTH بلا حدود.`
-              : `Sorry, you have exceeded your available usage quota for ${selectedMode === 'web_search' ? 'Web Search' : selectedMode === 'thinking' ? 'Deep Thinking' : 'Chat'} today. Please sign in or upgrade your subscription for unlimited access.`,
+              ? `عذراً، لقد نفد رصيد الاستخدام المتاح لـ ${selectedMode === 'web_search' ? 'البحث' : selectedMode === 'thinking' ? 'التفكير' : selectedMode === 'agent' ? 'الوكيل' : 'المحادثة'} اليوم. يرجى تسجيل الدخول أو ترقية باقتك لمتابعة استخدام THOTH بلا حدود.`
+              : `Sorry, you have exceeded your available usage quota for ${selectedMode === 'web_search' ? 'Web Search' : selectedMode === 'thinking' ? 'Deep Thinking' : selectedMode === 'agent' ? 'Agent' : 'Chat'} today. Please sign in or upgrade your subscription for unlimited access.`,
             isUser: false,
             time: timeString,
             isLimitError: true
@@ -2911,6 +2911,23 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                   </div>
                 ) :
 
+                /* 4.8 Agent Mode Animation (Task 37) */
+                selectedMode === 'agent' ? (
+                  <div className="flex items-center gap-3 py-1">
+                    <div className="p-1.5 rounded-lg bg-amber-500/20 border border-amber-500/30">
+                      <Bot className="w-4 h-4 text-amber-400 animate-pulse" />
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-xs font-semibold text-amber-300 animate-pulse">
+                        {isAr ? 'الوكيل الذكي بيحلل طلبك ويبنيه كامل...' : 'Agent is analyzing & building your request...'}
+                      </span>
+                      <span className="text-[10px] text-white/40">
+                        {isAr ? 'وضع الوكيل — بناء ذاتي لأي حاجة من أول مرة' : 'Agent mode — autonomous one-shot building'}
+                      </span>
+                    </div>
+                  </div>
+                ) :
+
                 /* 5. Fast Response Animation */
                 (
                   <div className="flex items-center gap-3 py-1">
@@ -2967,6 +2984,26 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                 >
                   <Brain className="w-3 h-3 text-purple-400" />
                   <span>{isAr ? 'تفكير عميق' : 'Deep Thinking'}</span>
+                </button>
+              )}
+
+              {/* [AGENT MODE — Task 37] Owner request: a وكيل (Agent) pill
+                  next to fast / deep-thinking. Runs Google's newest Gemini
+                  3.8 Flash as an autonomous builder that can build ANYTHING
+                  in one shot. Registered users only; daily runs gated
+                  server-side per plan (free=1, basic=3). */}
+              {isAuth && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedMode('agent')}
+                  className={`flex items-center gap-1.5 py-1 px-3 rounded-full text-xs font-semibold transition-all shrink-0 ${
+                    selectedMode === 'agent'
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                      : 'bg-white/5 text-white/60 hover:text-white hover:bg-white/10 border border-transparent'
+                  }`}
+                >
+                  <Bot className="w-3 h-3 text-amber-400" />
+                  <span>{isAr ? 'وكيل' : 'Agent'}</span>
                 </button>
               )}
 
@@ -3275,7 +3312,9 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                           ? (isAr ? "🧠 اطرح مسألة معقدة للتفكير العميق المفصل..." : "🧠 Ask a complex question for deep reasoning...")
                           : selectedMode === 'learn'
                             ? (isAr ? "🎓 اكتب أي موضوع أو الصق درس... وTHOTH يشرحه ويعمل خطته من غير كلمة زيادة" : "🎓 Type a topic or paste a lesson... THOTH teaches & plans it instantly")
-                            : (isAr ? "🌐 ابحث عن أي شيء في الويب..." : "🌐 Search anything across the web...")
+                            : selectedMode === 'agent'
+                              ? (isAr ? "🤖 اطلب من الوكيل يبني أي حاجة — موقع، لعبة، أداة، تحليل... وتوصلك جاهزة من أول مرة" : "🤖 Ask the Agent to build anything — site, game, tool, analysis...")
+                              : (isAr ? "🌐 ابحث عن أي شيء في الويب..." : "🌐 Search anything across the web...")
               }  
               value={input}
               onChange={(e) => setInput(e.target.value)}

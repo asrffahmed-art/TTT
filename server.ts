@@ -245,6 +245,7 @@ async function startServer() {
       normalChat: 5,
       thinkingChat: 2,
       webSearch: 1,
+      agentRun: 0, // Agent mode is registered-users only (0 => LOGIN_REQUIRED)
       liveVoiceSec: 120, // 2 minutes strictly for unauthenticated guests per 24 hours
       translation: 5,
       audioSummary: 0,
@@ -259,6 +260,7 @@ async function startServer() {
       normalChat: 20,
       thinkingChat: 15,
       webSearch: 3,
+      agentRun: 1,
       liveVoiceSec: 300, // 5 mins
       translation: 15,
       audioSummary: 1,
@@ -273,6 +275,7 @@ async function startServer() {
       normalChat: 60,
       thinkingChat: 40,
       webSearch: 5,
+      agentRun: 3,
       liveVoiceSec: 1200, // 20 mins
       translation: 50,
       audioSummary: 2,
@@ -287,6 +290,7 @@ async function startServer() {
       normalChat: 180,
       thinkingChat: 120,
       webSearch: 12,
+      agentRun: 10,
       liveVoiceSec: 2400, // 40 mins
       translation: 150,
       audioSummary: 5,
@@ -301,6 +305,7 @@ async function startServer() {
       normalChat: 400,
       thinkingChat: 250,
       webSearch: 25,
+      agentRun: 25,
       liveVoiceSec: 4800, // 80 mins
       translation: 400,
       audioSummary: 10,
@@ -315,6 +320,7 @@ async function startServer() {
       normalChat: 1000,
       thinkingChat: 600,
       webSearch: 50,
+      agentRun: 60,
       liveVoiceSec: 10800, // 180 mins
       translation: 1000,
       audioSummary: 25,
@@ -374,7 +380,7 @@ async function startServer() {
   async function checkAndIncrementUsageServerSide(
     userId: string | null | undefined,
     clientIp: string,
-    featureType: 'normalChat' | 'thinkingChat' | 'webSearch' | 'liveVoiceSec' | 'translation',
+    featureType: 'normalChat' | 'thinkingChat' | 'webSearch' | 'liveVoiceSec' | 'translation' | 'agentRun',
     cost: number = 1
   ): Promise<{
     allowed: boolean;
@@ -2724,11 +2730,14 @@ app.post("/api/chat", async (req, res) => {
       const userProfileContext = await getUserProfileContext(userId);
 
       // Determine feature type for usage checking
-      let featureType: 'normalChat' | 'thinkingChat' | 'webSearch' = 'normalChat';
+      let featureType: 'normalChat' | 'thinkingChat' | 'webSearch' | 'agentRun' = 'normalChat';
       if (mode === 'web_search') {
         featureType = 'webSearch';
       } else if (mode === 'thinking' || mode === 'reasoning') {
         featureType = 'thinkingChat';
+      } else if (mode === 'agent') {
+        // Task 37: the Agent pill has its own daily quota bucket per plan.
+        featureType = 'agentRun';
       }
 
       // Check & enforce limit server-side BEFORE executing Gemini / Tavily call
@@ -2947,6 +2956,24 @@ app.post("/api/chat", async (req, res) => {
 - التزم بلغة المستخدم نفسها وأسلوب THOTH الودود، ولا تخرج عن دورك كمعلم في هذا الوضع.` + "\n\n" + baseSystemInstruction;
       }
 
+
+      // [AGENT MODE — Task 37] Owner request: a dedicated وكيل (Agent) pill
+      // next to fast / deep-thinking, running Google's newest Gemini 3.8
+      // Flash. The agent AUTONOMOUSLY BUILDS ANYTHING in one shot — apps,
+      // games, tools, dashboards, documents, analyses — no clarifying
+      // questions, finished deliverable in the first reply. Pure prepend like
+      // thinking/learn; the study-tools tag pipeline + identity rules inside
+      // baseSystemInstruction stay fully intact. Quota is its own bucket
+      // (agentRun): guests blocked server-side, free=1, basic=3 per day.
+      if (mode === 'agent') {
+        activeSystemInstruction = `أنت THOTH Agent — الوكيل الذاتي القيادي لمنصة THOTH، ووضعك الحالي هو وضع الوكيل (Agent Mode). مهمتك أنك تنفّذ وتبني أي حاجة يطلبها المستخدم بنفسك من الأول للآخر، من غير أسئلة توضيحية ومن غير تأجيل:
+- قاعدة التنفيذ الذاتي (إلزامية): حلّل الطلب بصمت، خطّط داخليًا، ونفّذ كامل في أول رد. ممنوع منعًا باتًا أن تسأل «هل تريد أن...؟» أو تطلب تأكيدًا أو تقسّم العمل على ردود متعددة أو تقول «أخبرني بالمزيد لأبدأ». سلّم المنتج النهائي جاهزًا من أول مرة، ولو في نقطة غير واضحة اختار فيها الأنسب بنفسك بذكاء وكمّل واذكر قرارك باختصار في النهاية.
+- قدرات البناء (كلها مسموحة ومطلوبة في هذا الوضع): موقع كامل، تطبيق ويب، لعبة كاملة، لوحة تحكم، متجر إلكتروني، حاسبة، أداة دراسية، مؤقت أو منبه، كويز تفاعلي، صفحة هبوط، معرض أعمال، مولد كلمات مرور أو ألوان، محول وحدات، أي فكرة أخرى مهما كانت غير تقليدية — إذا كان يمكن بناؤه في ملف واحد فابنِه كاملًا فورًا.
+- صيغة التسليم لأي بناء برمجي (سواء طلب المستخدم البناء صراحةً أو كان واضحًا أنه يريد شيئًا يُعمَل): اكتب سطرًا أو سطرين بالعربية يشرحان ماذا بنيت وأهم مزاياه، ثم قدم الكود كاملًا داخل بلوك كود واحد فقط بلغة html — ملف HTML واحد متكامل يحتوي CSS وJavaScript داخليًا (يُسمح بـ Tailwind CSS عبر CDN)، تصميم فاخر متجاوب يعمل على الموبايل والكمبيوتر، بواجهة عربية RTL إذا طلب المستخدم بالعربية، وكل الوظائف شغالة فعليًا من أول تشغيل بلا أخطاء وبلا أجزاء ناقصة وبلا TODO وبلا «أكمل بنفسك». نظام المعاينة الفوري ArtifactViewer سيعرض منتجك للمستخدم مباشرة، فتأكد أن الكود سليم وقابل للتشغيل فورًا.
+- لو الطلب ليس بناء برمجيًا (سؤال، تحليل، بحث، كتابة، خطة، ترجمة، شرح، حساب، أو أي مهمة ذهنية): اشتغل كوكيل خبير شامل — نفّذ المهمة نفسها كاملة بعمق واحترافية في نفس الرد وقدّم نتيجة جاهزة للاستخدام فورًا، وليس مجرد نصائح عن كيفية فعلها.
+- زود قيمة كل رد: اختم دائمًا بخطوة تالية عملية واحدة أو اقتراح ذكي يضاعف فائدة ما بنيته للمستخدم.
+- التزم بكل قواعد THOTH الثابتة أدناه حرفيًا (هوية الشركة، أدوات الدراسة والوسوم، لغة المستخدم وأسلوبها الودود، ومنع ذكر أسماء النماذج أو الشركات الأخرى).` + "\n\n" + baseSystemInstruction;
+      }
 
       let genConfig: any = {
         systemInstruction: activeSystemInstruction + userProfileContext,
@@ -3601,7 +3628,13 @@ ${sourcesPromptContext}
         });
       }
 
-      if (mode === 'thinking') {
+      if (mode === 'agent') {
+        // Task 37: the Agent pill runs Google's newest Gemini 3.8 Flash,
+        // with the proven 3.7 / 3.6 flash models as graceful fallbacks.
+        primaryModel = "gemini-3.8-flash";
+        secondaryModel = "gemini-3.7-flash";
+        tertiaryModel = "gemini-3.6-flash";
+      } else if (mode === 'thinking') {
         genConfig.thinkingConfig = { thinkingLevel: "HIGH" };
         primaryModel = "gemma-4-31b-it";
         secondaryModel = "gemma-4-26b-a4b-it";
@@ -3634,7 +3667,7 @@ ${sourcesPromptContext}
                 config: currentConfig
               });
               if (response && response.text) {
-                const usedName = model.includes('31b') ? "Gemma 4 31B" : model.includes('26b') ? "Gemma 4 26B" : "Gemma 4 26B";
+                const usedName = model.includes('3.8') ? "Gemini 3.8 Flash" : model.includes('31b') ? "Gemma 4 31B" : model.includes('26b') ? "Gemma 4 26B" : "Gemma 4 26B";
                 return { text: response.text, modelUsed: usedName, actualModel: model };
               }
             } catch (err: any) {
@@ -3665,7 +3698,9 @@ ${sourcesPromptContext}
       try {
         let result: any = await tryGenerate([primaryModel, secondaryModel, tertiaryModel]);
         if (!result.modelUsed) {
-          result.modelUsed = mode === 'thinking' 
+          result.modelUsed = mode === 'agent'
+            ? "Gemini 3.8 Flash"
+            : mode === 'thinking' 
             ? "Gemma 4 31B" 
             : (mode === 'fast' ? "Gemma 4 26B" : "Gemma 4 31B");
         }
