@@ -548,7 +548,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
 
   return (
     <div 
-      className="flex flex-col w-full h-full pb-28 pt-20 px-3 sm:px-6 md:px-8 max-w-4xl mx-auto overflow-y-auto hide-scrollbar"
+      className="flex flex-col w-full h-full pb-28 pt-20 px-3 sm:px-6 md:px-8 max-w-4xl lg:max-w-5xl mx-auto overflow-y-auto hide-scrollbar"
       dir={isAr ? 'rtl' : 'ltr'}
     >
       
@@ -592,13 +592,13 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       )}
 
       {/* Language Selector Controls */}
-      <div className={`flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/10 mb-6 backdrop-blur-xl shadow-lg gap-2 relative z-30`}>
+      <div className={`flex items-center justify-between p-3 md:p-0 rounded-2xl md:rounded-3xl bg-white/5 md:bg-transparent border border-white/10 md:border-0 mb-6 backdrop-blur-xl md:backdrop-blur-none shadow-lg md:shadow-none gap-2 md:gap-3 relative z-30`}>
         {/* Source Language Side */}
-        <div className="flex items-center gap-2 flex-1 relative">
+        <div className="flex items-center gap-2 flex-1 relative md:gap-3 md:bg-white/[0.06] md:border md:border-white/10 md:rounded-2xl md:px-4 md:py-2.5 md:backdrop-blur-xl md:shadow-lg md:hover:border-white/25 md:transition-colors">
           <select 
             value={sourceLangId}
             onChange={(e) => handleLangChange(e.target.value, 'source')}
-            className="bg-transparent text-white font-bold text-xs sm:text-sm outline-none cursor-pointer w-full"
+            className="bg-transparent text-white font-bold text-xs sm:text-sm outline-none cursor-pointer w-full md:appearance-none"
           >
             {MAIN_LANGUAGES.map((l) => (
               <option key={l.id} value={l.id} className="bg-[#141824]">
@@ -606,6 +606,9 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
               </option>
             ))}
           </select>
+          {sourceLangId !== 'ar' && (
+            <ChevronDown className="hidden md:block absolute end-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40 pointer-events-none" />
+          )}
           {sourceLangId === 'ar' && (
             <button
               onClick={() => {
@@ -665,7 +668,10 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
         </button>
 
         {/* Target Language Side */}
-        <div className={`flex items-center gap-2 flex-1 justify-end relative`} dir={isAr ? 'ltr' : 'rtl'}>
+        <div className={`flex items-center gap-2 flex-1 justify-end relative md:gap-3 md:bg-white/[0.06] md:border md:border-white/10 md:rounded-2xl md:px-4 md:py-2.5 md:backdrop-blur-xl md:shadow-lg md:hover:border-white/25 md:transition-colors`} dir={isAr ? 'ltr' : 'rtl'}>
+          {targetLangId !== 'ar' && (
+            <ChevronDown className="hidden md:block absolute end-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40 pointer-events-none" />
+          )}
           {targetLangId === 'ar' && (
             <button
               onClick={() => {
@@ -718,7 +724,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
           <select 
             value={targetLangId}
             onChange={(e) => handleLangChange(e.target.value, 'target')}
-            className={`bg-transparent text-white font-bold text-xs sm:text-sm outline-none cursor-pointer w-full ${isAr ? 'text-right' : 'text-left'}`}
+            className={`bg-transparent text-white font-bold text-xs sm:text-sm outline-none cursor-pointer w-full md:appearance-none ${isAr ? 'text-right md:text-left' : 'text-left'}`}
           >
             {MAIN_LANGUAGES.filter(l => l.id !== 'auto').map((l) => (
               <option key={l.id} value={l.id} className="bg-[#141824]">
@@ -730,7 +736,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       </div>
 
       {/* Preset Phrases */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-3 mb-6 hide-scrollbar shrink-0">
+      <div className="flex items-center gap-2 overflow-x-auto md:overflow-visible pb-3 mb-6 hide-scrollbar md:flex-wrap md:justify-center shrink-0">
         <span className="text-[11px] font-bold text-white/40 shrink-0">
           {isAr ? 'عبارات مقترحة:' : 'Suggested phrases:'}
         </span>
@@ -791,7 +797,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
           the source box header. */}
       <button
         onClick={handleVoiceInput}
-        className={`mb-4 w-full py-3.5 px-4 rounded-2xl flex items-center justify-center gap-2.5 font-black text-sm transition-all shadow-lg active:scale-[0.98] border ${
+        className={`mb-4 w-full md:max-w-2xl md:mx-auto py-3.5 px-4 rounded-2xl flex items-center justify-center gap-2.5 font-black text-sm transition-all shadow-lg active:scale-[0.98] border ${
           isRecording
             ? 'bg-red-500/15 border-red-500/40 text-red-200 hover:bg-red-500/25'
             : `bg-gradient-to-r ${theme.previewGradient} ${theme.borderAccent} text-white hover:brightness-110`
@@ -812,10 +818,10 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
       </button>
 
       {/* Main Dual Box Layout */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5 mb-4">
         
         {/* Source Text Area */}
-        <div className={`flex flex-col p-5 rounded-3xl bg-white/5 border border-white/10 shadow-xl min-h-[220px] focus-within:bg-white/10 focus-within:${theme.borderAccent} transition-all`}>
+        <div className={`flex flex-col p-5 rounded-3xl bg-white/5 border border-white/10 shadow-xl min-h-[220px] md:min-h-[300px] focus-within:bg-white/10 focus-within:${theme.borderAccent} transition-all`}>
           <div className="flex items-center justify-between mb-3 pb-3 border-b border-white/10">
             <span className={`text-xs font-bold ${theme.textAccentBright}`}>
               {isAr ? `من (${getLangName(sourceLangId, sourceDialectId)})` : `From (${getLangName(sourceLangId, sourceDialectId)})`}
@@ -865,7 +871,7 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
         </div>
 
         {/* Target Translated Text Area */}
-        <div className={`flex flex-col p-5 rounded-3xl bg-gradient-to-br ${theme.previewGradient} border ${theme.borderAccent} shadow-2xl min-h-[220px] relative`}>
+        <div className={`flex flex-col p-5 rounded-3xl bg-gradient-to-br ${theme.previewGradient} border ${theme.borderAccent} shadow-2xl min-h-[220px] md:min-h-[300px] relative`}>
           <div className="flex items-center justify-between mb-3 pb-3 border-b border-white/20">
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-white shadow-sm">

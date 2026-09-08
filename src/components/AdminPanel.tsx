@@ -1736,28 +1736,111 @@ export function AdminPanel({ onClose }: AdminPanelProps) {
     u.id?.toLowerCase().includes(userSearchQuery.toLowerCase())
   );
 
+  // [Task 40] Desktop navigation model (display-only): the 20 admin tabs grouped
+  // into 6 clusters for the lg+ sidebar. Same activeTab/setActiveTab as the mobile
+  // command bar — purely a second view of the identical navigation state.
+  const adminNavGroups = [
+    { label: 'التحليلات', items: [
+      { id: 'overview', label: 'الملخص والتحليلات', icon: Activity },
+      { id: 'ai_insights', label: 'التحليل الذكي — AI Insights', icon: Sparkles, iconClass: 'text-emerald-400' },
+      { id: 'ai_monitoring', label: 'مراقبة استهلاك الـ AI', icon: Activity, iconClass: 'text-purple-400' },
+    ]},
+    { label: 'المستخدمون والمحتوى', items: [
+      { id: 'users', label: 'المستخدمين والحسابات', icon: Users, badge: String(stats?.totalUsers ?? 0) },
+      { id: 'storage', label: 'مراقبة التخزين', icon: HardDrive, iconClass: 'text-purple-400' },
+      { id: 'content', label: 'الأخبار والمحتوى', icon: FileText },
+      { id: 'broadcast', label: 'البث الجماعي الفوري', icon: Megaphone },
+    ]},
+    { label: 'المالية', items: [
+      { id: 'plans', label: 'الخطط والأسعار', icon: Crown, iconClass: 'text-amber-400' },
+      { id: 'promo_codes', label: 'أكواد الاسترداد والخصم', icon: Gift, iconClass: 'text-pink-400' },
+      { id: 'payment_orders', label: 'طلبات الدفع (Paymob)', icon: CreditCard, iconClass: 'text-emerald-400' },
+    ]},
+    { label: 'الذكاء الاصطناعي', items: [
+      { id: 'ai_config', label: 'قواعد الذكاء الاصطناعي', icon: Bot },
+      { id: 'training_models', label: 'تدريب النماذج والبيانات', icon: Sparkles, iconClass: 'text-purple-400' },
+      { id: 'api_keys', label: 'مفاتيح ومصادر المشروع', icon: Lock, iconClass: 'text-amber-400' },
+    ]},
+    { label: 'النظام والبنية', items: [
+      { id: 'db_tools', label: 'صيانة قاعدة البيانات', icon: HardDrive },
+      { id: 'email_settings', label: 'البريد و Resend', icon: Mail, iconClass: 'text-emerald-400' },
+      { id: 'system_logs', label: 'سجلات وأحداث النظام', icon: Activity, iconClass: 'text-emerald-400' },
+      { id: 'config', label: 'إعدادات النظام والصيانة', icon: Sliders },
+    ]},
+    { label: 'الأعمال', items: [
+      { id: 'advertising', label: 'الإعلانات والتحليلات', icon: Megaphone, iconClass: 'text-purple-400' },
+      { id: 'legal', label: 'الشروط والسياسات القانونية', icon: ShieldCheck, iconClass: 'text-emerald-400' },
+      { id: 'audio_diagnostics', label: 'Audio Diagnostics', icon: Volume2 },
+    ]},
+  ];
+
   return (
-    <div className="flex flex-col w-full h-full pb-28 pt-20 px-3 sm:px-6 md:px-8 max-w-5xl mx-auto overflow-y-auto hide-scrollbar">
+    <div className="flex flex-col lg:flex-row w-full h-full pb-28 pt-20 px-3 sm:px-6 md:px-8 max-w-5xl lg:max-w-[1500px] mx-auto overflow-y-auto lg:overflow-hidden lg:gap-6">
+
+      {/* [Task 40] Desktop sidebar (lg+) — mobile keeps the existing sticky command bar below */}
+      <aside className="hidden lg:flex flex-col w-[272px] shrink-0 h-full overflow-y-auto overflow-x-hidden hide-scrollbar bg-white/[0.02] border border-white/[0.06] rounded-3xl p-3">
+        <div className="flex items-center gap-3 px-2 pb-4 mb-2 border-b border-white/[0.07]">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-lg shadow-indigo-950/40 border border-white/10 shrink-0">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-black text-white leading-tight">THOTH Admin</div>
+            <div className="text-[10px] text-white/40 font-bold">مركز القيادة والتحكم الكامل</div>
+          </div>
+        </div>
+        <nav className="flex flex-col gap-5 pb-4">
+          {adminNavGroups.map((group) => (
+            <div key={group.label} className="flex flex-col gap-1">
+              <span className="text-[9px] font-black uppercase tracking-[0.18em] text-white/25 px-3 mb-1">{group.label}</span>
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-[12.5px] font-bold transition-all cursor-pointer border text-right ${
+                      isActive
+                        ? 'bg-indigo-500/[0.14] text-white border-indigo-400/30 shadow-sm shadow-indigo-950/30'
+                        : 'text-white/50 border-transparent hover:text-white hover:bg-white/[0.05] hover:border-white/[0.06]'
+                    }`}
+                  >
+                    <Icon className={`w-4 h-4 shrink-0 ${item.iconClass ?? (isActive ? 'text-indigo-300' : 'text-white/40')}`} />
+                    <span className="flex-1 truncate">{item.label}</span>
+                    {item.badge && (
+                      <span className="px-1.5 py-0.5 rounded-md bg-white/[0.07] border border-white/10 text-[9px] font-black text-white/60 tabular-nums">{item.badge}</span>
+                    )}
+                    {isActive && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+        <div className="mt-auto pt-3 px-2 text-[9px] font-mono text-white/20 tracking-[0.2em] uppercase">THOTH Admin Console</div>
+      </aside>
+
+      {/* Content column — becomes the independent scroll container on desktop */}
+      <div className="flex flex-col min-w-0 flex-1 lg:overflow-y-auto lg:overflow-x-hidden hide-scrollbar">
       
       {/* Top Header Card */}
-      <div className="relative mb-6 p-[1.5px] rounded-[1.7rem] bg-gradient-to-l from-purple-500/60 via-fuchsia-500/25 to-indigo-500/60 shadow-2xl shadow-purple-950/40">
-        <div className="absolute -top-12 -right-12 w-44 h-44 rounded-full bg-purple-600/20 blur-3xl pointer-events-none" />
-        <div className="absolute -bottom-14 -left-10 w-44 h-44 rounded-full bg-indigo-600/15 blur-3xl pointer-events-none" />
-        <div className="relative p-6 bg-[#0b0716]/95 backdrop-blur-2xl rounded-[calc(1.7rem-1.5px)] flex flex-col sm:flex-row sm:items-center justify-between gap-4 overflow-hidden">
+      <div className="relative mb-6 rounded-2xl bg-[#0c1120]/90 backdrop-blur-xl border border-white/10 shadow-xl shadow-black/30 overflow-hidden shrink-0">
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-l from-transparent via-indigo-400/60 to-transparent" />
+        <div className="relative p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 via-fuchsia-600 to-pink-600 text-white flex items-center justify-center shadow-lg shadow-purple-900/60 border border-white/20 shrink-0">
-              <ShieldCheck className="w-8 h-8" />
-              <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#0b0716] animate-pulse" />
+            <div className="relative w-12 h-12 rounded-2xl bg-indigo-500/[0.12] border border-indigo-400/25 text-indigo-300 flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-6 h-6" />
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#0c1120] animate-pulse" />
             </div>
             <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="text-xl font-black text-white tracking-tight">لوحة تحكم الأدمن المطلقة</h1>
-                <span className="px-2.5 py-0.5 rounded-full bg-purple-500/15 text-purple-200 border border-purple-400/40 text-[10px] font-extrabold tracking-wide">
-                  تحكم كامل بالمستخدمين وقواعد البيانات
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h1 className="text-lg font-black text-white tracking-tight">مركز إدارة منصة THOTH</h1>
+                <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-400/25 text-[9px] font-extrabold tracking-widest">
+                  مباشر
                 </span>
               </div>
-              <p className="text-xs text-white/50 mt-1">
-                إدارة الحسابات، الأوسمة، قواعد الذكاء الاصطناعي، صيانة Firestore، والبث الجماعي
+              <p className="text-xs text-white/45 mt-1">
+                إدارة الحسابات والمحتوى وقواعد الذكاء الاصطناعي وصيانة Firestore والبث الجماعي — من مكان واحد
               </p>
             </div>
           </div>
@@ -1792,7 +1875,7 @@ export function AdminPanel({ onClose }: AdminPanelProps) {
       </div>
 
       {/* Tabs Navigation Header — grouped command bar */}
-      <div className="sticky top-[4.4rem] z-30 mb-6 shrink-0 rounded-2xl bg-[#07040f]/85 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/60 overflow-hidden">
+      <div className="lg:hidden sticky top-[4.4rem] z-30 mb-6 shrink-0 rounded-2xl bg-[#07040f]/85 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/60 overflow-hidden">
         <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-l from-transparent via-purple-400/60 to-transparent" />
         <div className="flex items-stretch overflow-x-auto hide-scrollbar py-2">
           <div className="flex flex-col gap-1.5 px-3 shrink-0">
@@ -2057,54 +2140,69 @@ export function AdminPanel({ onClose }: AdminPanelProps) {
       {activeTab === 'overview' && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-indigo-400/40 hover:shadow-xl hover:shadow-indigo-950/30">
-              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-indigo-500/20 blur-2xl transition-all duration-500 group-hover:bg-indigo-500/35 pointer-events-none" />
-              <div className="relative flex items-center justify-between text-indigo-400 mb-2">
-                <Users className="w-5 h-5" />
-                <span className="text-[10px] font-bold uppercase text-white/40">المستخدمين</span>
+            <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 flex flex-col justify-between gap-3 transition-colors duration-200 hover:bg-white/[0.06] hover:border-indigo-400/30">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-white/45">المستخدمين</span>
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-400/20 text-indigo-300 flex items-center justify-center shrink-0">
+                  <Users className="w-4 h-4" />
+                </div>
               </div>
-              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.totalUsers ?? 0}</span>
-              <span className="relative text-[10px] text-white/45 mt-1.5">حساب مسجل في Firestore</span>
+              <div>
+                <span className="block text-3xl leading-none font-black text-white tabular-nums">{isLoadingStats ? '...' : stats?.totalUsers ?? 0}</span>
+                <span className="block text-[10px] text-white/40 mt-1.5">حساب مسجل في Firestore</span>
+              </div>
             </div>
 
-            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-emerald-400/40 hover:shadow-xl hover:shadow-emerald-950/30">
-              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-emerald-500/20 blur-2xl transition-all duration-500 group-hover:bg-emerald-500/35 pointer-events-none" />
-              <div className="relative flex items-center justify-between text-emerald-400 mb-2">
-                <Radio className="w-5 h-5" />
-                <span className="text-[10px] font-bold uppercase text-white/40">الأجهزة المفعلة</span>
+            <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 flex flex-col justify-between gap-3 transition-colors duration-200 hover:bg-white/[0.06] hover:border-emerald-400/30">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-white/45">الأجهزة المفعلة</span>
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-400/20 text-emerald-300 flex items-center justify-center shrink-0">
+                  <Radio className="w-4 h-4" />
+                </div>
               </div>
-              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.activeTokens ?? 0}</span>
-              <span className="relative text-[10px] text-white/45 mt-1.5">FCM Tokens</span>
+              <div>
+                <span className="block text-3xl leading-none font-black text-white tabular-nums">{isLoadingStats ? '...' : stats?.activeTokens ?? 0}</span>
+                <span className="block text-[10px] text-white/40 mt-1.5">FCM Tokens</span>
+              </div>
             </div>
 
-            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-red-400/40 hover:shadow-xl hover:shadow-red-950/30">
-              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-red-500/20 blur-2xl transition-all duration-500 group-hover:bg-red-500/35 pointer-events-none" />
-              <div className="relative flex items-center justify-between text-red-400 mb-2">
-                <UserX className="w-5 h-5" />
-                <span className="text-[10px] font-bold uppercase text-white/40">الموقوفين</span>
+            <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 flex flex-col justify-between gap-3 transition-colors duration-200 hover:bg-white/[0.06] hover:border-red-400/30">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-white/45">الموقوفين</span>
+                <div className="w-8 h-8 rounded-lg bg-red-500/10 border border-red-400/20 text-red-300 flex items-center justify-center shrink-0">
+                  <UserX className="w-4 h-4" />
+                </div>
               </div>
-              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.suspendedUsers ?? 0}</span>
-              <span className="relative text-[10px] text-white/45 mt-1.5">حساب موقوف عن العمل</span>
+              <div>
+                <span className="block text-3xl leading-none font-black text-white tabular-nums">{isLoadingStats ? '...' : stats?.suspendedUsers ?? 0}</span>
+                <span className="block text-[10px] text-white/40 mt-1.5">حساب موقوف عن العمل</span>
+              </div>
             </div>
 
-            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-pink-400/40 hover:shadow-xl hover:shadow-pink-950/30">
-              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-pink-500/20 blur-2xl transition-all duration-500 group-hover:bg-pink-500/35 pointer-events-none" />
-              <div className="relative flex items-center justify-between text-pink-400 mb-2">
-                <Sparkles className="w-5 h-5" />
-                <span className="text-[10px] font-bold uppercase text-white/40">الإشعارات اليومية</span>
+            <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 flex flex-col justify-between gap-3 transition-colors duration-200 hover:bg-white/[0.06] hover:border-pink-400/30">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-white/45">الإشعارات اليومية</span>
+                <div className="w-8 h-8 rounded-lg bg-pink-500/10 border border-pink-400/20 text-pink-300 flex items-center justify-center shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </div>
               </div>
-              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.totalDailyNotifications ?? 0}</span>
-              <span className="relative text-[10px] text-white/45 mt-1.5">ملخص تم إنشاؤه</span>
+              <div>
+                <span className="block text-3xl leading-none font-black text-white tabular-nums">{isLoadingStats ? '...' : stats?.totalDailyNotifications ?? 0}</span>
+                <span className="block text-[10px] text-white/40 mt-1.5">ملخص تم إنشاؤه</span>
+              </div>
             </div>
 
-            <div className="relative p-4 rounded-2xl bg-gradient-to-b from-white/[0.08] to-white/[0.02] backdrop-blur-md border border-white/10 overflow-hidden flex flex-col justify-between transition-all duration-300 group hover:-translate-y-1 hover:border-amber-400/40 hover:shadow-xl hover:shadow-amber-950/30">
-              <div className="absolute -top-10 -left-10 w-24 h-24 rounded-full bg-amber-500/20 blur-2xl transition-all duration-500 group-hover:bg-amber-500/35 pointer-events-none" />
-              <div className="relative flex items-center justify-between text-amber-400 mb-2">
-                <Megaphone className="w-5 h-5" />
-                <span className="text-[10px] font-bold uppercase text-white/40">البث الجماعي</span>
+            <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 flex flex-col justify-between gap-3 transition-colors duration-200 hover:bg-white/[0.06] hover:border-amber-400/30">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-white/45">البث الجماعي</span>
+                <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-400/20 text-amber-300 flex items-center justify-center shrink-0">
+                  <Megaphone className="w-4 h-4" />
+                </div>
               </div>
-              <span className="relative text-[1.65rem] leading-none font-black text-white">{isLoadingStats ? '...' : stats?.broadcastsCount ?? 0}</span>
-              <span className="relative text-[10px] text-white/45 mt-1.5">حملة إشعار جماعي</span>
+              <div>
+                <span className="block text-3xl leading-none font-black text-white tabular-nums">{isLoadingStats ? '...' : stats?.broadcastsCount ?? 0}</span>
+                <span className="block text-[10px] text-white/40 mt-1.5">حملة إشعار جماعي</span>
+              </div>
             </div>
           </div>
 
@@ -6938,6 +7036,7 @@ export function AdminPanel({ onClose }: AdminPanelProps) {
         </div>
       )}
 
+    </div>
     </div>
   );
 }
