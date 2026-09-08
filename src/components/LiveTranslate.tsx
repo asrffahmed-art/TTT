@@ -579,8 +579,20 @@ export function LiveTranslate({ onSendToChat, onNavigate }: LiveTranslateProps) 
         </p>
       </div>
 
+      {/* [Task 39] Click-outside catcher: while the Arabic dialects menu is
+          open, any tap outside the language bar closes it — the menu can no
+          longer linger over the content below. z order: catcher 10 < bar 30
+          < dropdown 50 (bottom nav z-50 at App level stays reachable). */}
+      {isDialectModalOpen && (
+        <div
+          className="fixed inset-0 z-10"
+          onClick={() => setIsDialectModalOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Language Selector Controls */}
-      <div className={`flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/10 mb-6 backdrop-blur-xl shadow-lg gap-2 relative`}>
+      <div className={`flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/10 mb-6 backdrop-blur-xl shadow-lg gap-2 relative z-30`}>
         {/* Source Language Side */}
         <div className="flex items-center gap-2 flex-1 relative">
           <select 
