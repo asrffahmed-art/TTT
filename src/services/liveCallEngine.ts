@@ -10,9 +10,12 @@
  *    replacement for the deprecated ScriptProcessor) with an automatic
  *    native-rate fallback (cubic resampler) for devices whose Chrome delivers
  *    silent input on forced-rate contexts.
- *  - Playback: scheduled AudioBufferSourceNodes (24 kHz PCM) on the default-rate
- *    output context with a 150 ms jitter pre-buffer, 5 ms onset fade-in and a
- *    12 ms master fade-out on interrupts (no clicks).
+ *  - Playback: scheduled AudioBufferSourceNodes (24 kHz PCM) on a NATIVE 24 kHz
+ *    output context (no per-buffer resampling artifacts on any device; falls
+ *    back to the default-rate context where browsers refuse the rate) with a
+ *    150 ms jitter pre-buffer, 5 ms onset fade-in (bursts AND underrun
+ *    resumes), a 450 ms echo tail before the mic reopens, and a 12 ms master
+ *    fade-out on interrupts (no clicks).
  *  - Call behaviour: browser Wake Lock while the call is live (screen stays on,
  *    like a real call) + MediaSession playback state (the OS treats the tab as
  *    an active media/call session). The mic-in-use pill is provided by the
@@ -44,7 +47,12 @@ export interface LiveCallEngineCallbacks {
 const INPUT_RATE = 16000;
 const OUTPUT_CHUNK_RATE = 24000;
 const MIC_OPEN_FILTER_MS = 600;   // drop the mic-open "recording start" pop
-const PLAYBACK_TAIL_MS = 300;     // speaker echo decay before mic reopens
+const PLAYBACK_TAIL_MS = 450;     // speaker echo decay before mic reopens
+                                   // [NOISE FIX] 450 ms: room echo tails from
+                                   // loud/reverberant speakers last up to ~0.5 s;
+                                   // reopening the mic at 300 ms let the model
+                                   // hear its own tail and re-trigger on it
+                                   // (the "weird mid-call sound" on some devices).
 const NOISE_GATE_RMS = 0.004;     // skip near-silence so hum never confuses the model
 const JITTER_PREBUFFER_S = 0.15;  // initial play delay per speech burst (anti-stutter)
 const STALE_QUEUE_S = 0.25;       // queue finished this long ago -> force-unblock mic
@@ -459,6 +467,11 @@ export class LiveCallEngine {
       } else if (this.nextPlayTime < currentTime) {
         this.stats.underruns++;
         this.nextPlayTime = currentTime + 0.01;
+        // [NOISE FIX] resume-after-gap must fade in too: a chunk starting at
+        // full amplitude right after a queue gap is a guaranteed click. Same
+        // 5 ms ramp used for burst onsets — inaudible, removes the pop.
+        const fadeLen = Math.min(120, float32.length);
+        for (let i = 0; i < fadeLen; i++) float32[i] *= i / fadeLen;
       }
 
       const audioBuffer = ctx.createBuffer(1, float32.length, sampleRate);
@@ -525,7 +538,26 @@ export class LiveCallEngine {
     try {
       if (!this.outCtx || this.outCtx.state === 'closed') {
         const AudioCtxCtor = window.AudioContext || (window as any).webkitAudioContext;
-        this.outCtx = new AudioCtxCtor();
+        // [NOISE FIX] Open the output context at the model's NATIVE 24 kHz so
+        // playback buffers never get per-buffer resampled. At device-default
+        // rates (e.g. 44100 Hz on many laptops) every 24 kHz chunk was run
+        // through a fresh independent resampler (non-integer ratio) — the
+        // per-chunk boundary discontinuities produced periodic crackle and a
+        // high-pitch squeal on those devices only (48 kHz devices, exact 2:1,
+        // stayed clean). A 24 kHz context plays every chunk 1:1 everywhere.
+        // Graceful fallback: legacy webkitAudioContext ignores the option and
+        // any rejection/foreign reported rate falls back to the default-rate
+        // context — byte-identical behaviour to the old build.
+        let outCtxNative: AudioContext | null = null;
+        try {
+          const candidate = new AudioCtxCtor({ sampleRate: OUTPUT_CHUNK_RATE });
+          if (candidate && candidate.sampleRate === OUTPUT_CHUNK_RATE) {
+            outCtxNative = candidate;
+          } else {
+            try { candidate?.close?.(); } catch {}
+          }
+        } catch {}
+        this.outCtx = outCtxNative || new AudioCtxCtor();
         const master = this.outCtx.createGain();
         master.gain.value = 1;
         master.connect(this.outCtx.destination);
