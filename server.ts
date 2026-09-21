@@ -10377,8 +10377,9 @@ app.all("/api/*", (req, res) => {
         const FALLBACK_LIVE_MODEL = "gemini-2.5-flash-native-audio-latest";
         const requestedLiveModel = reqUrl.searchParams.get("model");
         // ?thinking=1 -> whole session on the extended-thinking model.
-        // ?thinkingLevel=low|medium|high -> optional thinking_level tuning
-        // (attached ONLY when explicitly requested; unsupported values ignored).
+        // ?thinkingLevel=low|medium|high -> thinking_level tuning (default
+        // "high" for the extended model, which REQUIRES a thinking level at
+        // setup; unsupported values ignored).
         // ?resumeHandle=<handle> -> resume a dropped Live session.
         const thinkingParam = reqUrl.searchParams.get("thinking") === "1";
         const rawThinkingLevel = (reqUrl.searchParams.get("thinkingLevel") || "").toLowerCase();
@@ -10587,8 +10588,8 @@ app.all("/api/*", (req, res) => {
               ...(isExtendedModel(modelName)
                 ? { mediaResolution: "MEDIA_RESOLUTION_MEDIUM" }
                 : { mediaResolution: "MEDIA_RESOLUTION_LOW" }),
-              ...(isExtendedModel(modelName) && thinkingLevelParam
-                ? { thinkingConfig: { thinkingLevel: thinkingLevelParam } }
+              ...(isExtendedModel(modelName)
+                ? { thinkingConfig: { thinkingLevel: thinkingLevelParam || "high" } }
                 : {}),
             },
             callbacks: {
