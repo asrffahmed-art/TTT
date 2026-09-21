@@ -70,6 +70,9 @@ export function VoiceDialog({
   const reconnectAttemptsRef = useRef(0);
   const pendingContextReplayRef = useRef(false);
   const lastUserPieceAtRef = useRef(0);
+  const lastModelPieceAtRef = useRef(0);
+  const [mediaHint, setMediaHint] = useState<string>('');
+  const mediaHintTimerRef = useRef<any>(null);
   const transcriptsRef = useRef<{role: 'user'|'model', text: string}[]>([]);
   const extendedThinkingRef = useRef(false);
   useEffect(() => { transcriptsRef.current = transcripts; }, [transcripts]);
@@ -142,6 +145,8 @@ export function VoiceDialog({
       vimRef.current = null;
       setScreenState('off');
       setCameraState('off');
+      setMediaHint('');
+      if (mediaHintTimerRef.current) { clearTimeout(mediaHintTimerRef.current); mediaHintTimerRef.current = null; }
       setInteractionBusy(false);
       setReconnecting(false);
       reconnectAttemptsRef.current = 0;
@@ -270,12 +275,23 @@ export function VoiceDialog({
         return [...prev, { role: 'user', text: msg.text }];
       });
       lastUserPieceAtRef.current = Date.now();
-    } else if (msg.type === 'output_transcription') {
-      // Model speech is already transcribed through the modelTurn 'text'
-      // channel on this stack; the official output channel stays ignored here
-      // to avoid double-rendering (the server still exposes it).
+    } else if (msg.type === 'output_transcription' && msg.text) {
+      // [3.8 LIVE] native-audio models transcribe their speech ONLY through
+      // this channel (modelTurn carries no text parts) — THOTH's voice lands
+      // in the SAME conversation the Chat layer renders.
+      setTranscripts(prev => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === 'model' && Date.now() - lastModelPieceAtRef.current < 5000) {
+          const arr = [...prev];
+          arr[arr.length - 1] = { role: 'model', text: (last.text + ' ' + msg.text).trim() };
+          return arr;
+        }
+        return [...prev, { role: 'model', text: msg.text }];
+      });
+      lastModelPieceAtRef.current = Date.now();
     } else if (msg.type === 'turn_complete') {
       lastUserPieceAtRef.current = 0; // next voice piece opens a fresh user turn
+      lastModelPieceAtRef.current = 0;
     } else if (msg.type === 'interaction_status' && msg.status) {
       // [EXTENDED THINKING LIFECYCLE] turnComplete is NOT completion: the
       // agent may keep reasoning/running tools after it. Only IDLE ends work.
@@ -507,6 +523,12 @@ export function VoiceDialog({
         },
         onSourceChange: (source, state) => {
           if (source === 'screen') setScreenState(state); else setCameraState(state);
+          // [PERMISSIONS UX] explicit transient states — never a stuck ON
+          if (state === 'denied' || state === 'unavailable' || state === 'ended') {
+            setMediaHint(source + '-' + state);
+            if (mediaHintTimerRef.current) clearTimeout(mediaHintTimerRef.current);
+            mediaHintTimerRef.current = setTimeout(() => setMediaHint(''), 4500);
+          }
         }
       });
     }
@@ -758,6 +780,20 @@ export function VoiceDialog({
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* [PERMISSIONS UX] explicit transient media states */}
+      {mediaHint && (
+        <div className="w-full px-4 pb-1 relative z-10 text-center">
+          <span className="text-[10px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-full px-3 py-1">
+            {mediaHint === 'screen-denied' && (isAr ? 'تم رفض إذن مشاركة الشاشة — الصوت والمحادثة شغالين عادي' : 'Screen permission denied — voice & chat still work')}
+            {mediaHint === 'screen-unavailable' && (isAr ? 'مشاركة الشاشة غير مدعومة هنا — الصوت والمحادثة شغالين عادي' : 'Screen sharing unsupported here — voice & chat still work')}
+            {mediaHint === 'screen-ended' && (isAr ? 'اتقفلت مشاركة الشاشة' : 'Screen sharing ended')}
+            {mediaHint === 'camera-denied' && (isAr ? 'تم رفض إذن الكاميرا — الصوت والمحادثة شغالين عادي' : 'Camera permission denied — voice & chat still work')}
+            {mediaHint === 'camera-unavailable' && (isAr ? 'الكاميرا غير متاحة — الصوت والمحادثة شغالين عادي' : 'Camera unavailable — voice & chat still work')}
+            {mediaHint === 'camera-ended' && (isAr ? 'الكاميرا اتقفلت' : 'Camera ended')}
+          </span>
         </div>
       )}
 

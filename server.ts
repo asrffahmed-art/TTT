@@ -10606,11 +10606,13 @@ app.all("/api/*", (req, res) => {
                 }
 
                 if (message.serverContent) {
+                   let modelTurnTextThisMessage = false;
                    const modelTurn = message.serverContent.modelTurn;
                    if (modelTurn && modelTurn.parts) {
                       const parts = modelTurn.parts || [];
                       for (const part of parts) {
                           if (part.text) {
+                             modelTurnTextThisMessage = true;
                              if (ws.readyState === WebSocket.OPEN) {
                                  ws.send(JSON.stringify({ type: 'text', text: part.text }));
                                  // [STUDY TOOLS] auto-close: the tutor's scripted
@@ -10647,6 +10649,14 @@ app.all("/api/*", (req, res) => {
                    const outTr = message.serverContent.outputTranscription;
                    if (outTr && outTr.text && ws.readyState === WebSocket.OPEN) {
                      ws.send(JSON.stringify({ type: 'output_transcription', text: outTr.text }));
+                     // [3.8 LIVE] native-audio models deliver speech text ONLY
+                     // here (modelTurn has no text parts): the lesson-end
+                     // protocol and the conversation memory must read it too.
+                     if (studyTopicParam && !lessonEndSent && outTr.text.includes('خلصنا الدرس')) {
+                       lessonEndSent = true;
+                       ws.send(JSON.stringify({ type: 'lesson_end' }));
+                     }
+                     if (!modelTurnTextThisMessage) pushRecentTurn('model', outTr.text);
                    }
                    const iStat = (message.serverContent as any).interactionStatus;
                    if (iStat && ws.readyState === WebSocket.OPEN) {
