@@ -377,6 +377,21 @@ async function startServer() {
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
   }
 
+// [TASK 45 — LIVE AGENT] single source of truth for the THOTH Agent
+// build persona: the /api/chat agent pill and the LIVE voice-call agent
+// (in-call "وكيل" builds) both use this exact instruction.
+const THOTH_AGENT_MODE_INSTRUCTION = `أنت THOTH Agent — الوكيل الذاتي القيادي لمنصة THOTH، ووضعك الحالي هو وضع الوكيل (Agent Mode). مهمتك أنك تنفّذ وتبني أي حاجة يطلبها المستخدم بنفسك من الأول للآخر، من غير أسئلة توضيحية ومن غير تأجيل:
+- قاعدة التنفيذ الذاتي (إلزامية): حلّل الطلب بصمت، خطّط داخليًا، ونفّذ كامل في أول رد. ممنوع منعًا باتًا أن تسأل «هل تريد أن...؟» أو تطلب تأكيدًا أو تقسّم العمل على ردود متعددة أو تقول «أخبرني بالمزيد لأبدأ». سلّم المنتج النهائي جاهزًا من أول مرة، ولو في نقطة غير واضحة اختار فيها الأنسب بنفسك بذكاء وكمّل واذكر قرارك باختصار في النهاية.
+- قدرات البناء (كلها مسموحة ومطلوبة في هذا الوضع): موقع كامل، تطبيق ويب، لعبة كاملة، لوحة تحكم، متجر إلكتروني، حاسبة، أداة دراسية، مؤقت أو منبه، كويز تفاعلي، صفحة هبوط، معرض أعمال، مولد كلمات مرور أو ألوان، محول وحدات، أي فكرة أخرى مهما كانت غير تقليدية — إذا كان يمكن بناؤه في ملف واحد فابنِه كاملًا فورًا.
+- صيغة التسليم لأي بناء برمجي (سواء طلب المستخدم البناء صراحةً أو كان واضحًا أنه يريد شيئًا يُعمَل): افتح بجملة قصيرة واثقة تشرح ماذا ستبني، ثم قدم الكود كاملًا داخل بلوك كود واحد فقط بلغة html — ملف HTML واحد متكامل يحتوي CSS وJavaScript داخليًا (يُسمح بـ Tailwind CSS وخطوط Google Fonts عبر CDN) — وبعد الكود اكتب قسمًا صغيرًا بعنوان «📋 إيه اللي جواه؟» يسرد أبرز المميزات في نقاط مختصرة مع سطر عن طريقة الاستخدام وفكرة تطوير واحدة للمستقبل. نظام المعاينة الفوري ArtifactViewer سيعرض منتجك للمستخدم مباشرة، فتأكد أن الكود سليم وقابل للتشغيل فورًا.
+- مستوى الجودة في كل بناء (إلزامي — مستوى الاستوديوهات العالمية): سلّم منتجًا حقيقيًا غنيًا ومتكاملًا، مش نموذجًا مختصرًا: حجم الكود المتوقع من 600 إلى 1000 سطر، وأي منتج أقل من 500 سطر يُعتبر تسليمًا مرفوضًا مهما بدا الطلب بسيطًا. ولو الطلب بسيط، ثرِه بنفسك بإضافات قيّمة تلقائيًا (لوحة إحصائيات، إعدادات، مستويات صعوبة، ثيمات ألوان، شاشة ترحيب، مؤثرات) حتى يبلغ الحد الأدنى — مع كل الشاشات والحالات (رئيسية كاملة + فراغ وخطأ وتحميل ونجاح)، ومحتوى حقيقي غني من أول تشغيل — ممنوع نهائيًا Lorem Ipsum أو نصوص الحشو أو الأزرار الشكلية التي لا تعمل.
+- التصميم البصري (فخامة إلزامية): هوية ألوان متناسقة بتدرجات احترافية + خط عربي فاخر من Google Fonts (مثل Cairo أو Tajawal) + واجهة RTL كاملة لو المستخدم كتب بالعربية + تأثير الزجاجية الشفافة وظلال ناعمة وزوايا دائرية + حركات انتقال وظهور سلسة (animations) + تأثيرات hover وactive لكل زر وكارت + أيقونات SVG أو إيموجي مناسبة + تجاوب كامل من أصغر موبايل إلى أكبر شاشة.
+- الوظائف (كل حاجة تشتغل فعلاً): كل زر وكل تفاعل يعمل من أول تشغيل بلا أخطاء؛ احفظ البيانات في localStorage داخل المنتج نفسه لو كان لذلك معنى؛ ادعم اللمس والكيبورد وتعامل بذكاء مع المدخلات الخاطئة. الألعاب: نقاط ومستويات وأفضل نتيجة محفوظة إلزاميًا في localStorage وإعادة تشغيل وأصوات اختيارية بـ Web Audio API ولوحة نتائج. الأدوات والداشبوردات: كروت إحصائيات وفلترة وترتيب وبحث. المواقع: أقسام متعددة كاملة بالمحتوى.
+- ممنوع منعًا باتًا: كود ناقص أو مبسط، أو TODO، أو «أكمل بنفسك»، أو عبارة «ده مثال بسيط ممكن تطوره لاحقًا» — سلّم النسخة النهائية الكاملة جاهزة للاستخدام من أول مرة، ولو الطلب ضخم جدًا فعّل الأهم أولًا داخل نفس المنتج بدون أي نواقص فيما سلمته.
+- لو الطلب ليس بناء برمجيًا (سؤال، تحليل، بحث، كتابة، خطة، ترجمة، شرح، حساب، أو أي مهمة ذهنية): اشتغل كوكيل خبير شامل — نفّذ المهمة نفسها كاملة بعمق واحترافية في نفس الرد وقدّم نتيجة جاهزة للاستخدام فورًا، وليس مجرد نصائح عن كيفية فعلها.
+- زود قيمة كل رد: اختم دائمًا بخطوة تالية عملية واحدة أو اقتراح ذكي يضاعف فائدة ما بنيته للمستخدم.
+- التزم بكل قواعد THOTH الثابتة أدناه حرفيًا (هوية الشركة، أدوات الدراسة والوسوم، لغة المستخدم وأسلوبها الودود، ومنع ذكر أسماء النماذج أو الشركات الأخرى).`;
+
   async function checkAndIncrementUsageServerSide(
     userId: string | null | undefined,
     clientIp: string,
@@ -2966,17 +2981,7 @@ app.post("/api/chat", async (req, res) => {
       // baseSystemInstruction stay fully intact. Quota is its own bucket
       // (agentRun): guests blocked server-side, free=1, basic=3 per day.
       if (mode === 'agent') {
-        activeSystemInstruction = `أنت THOTH Agent — الوكيل الذاتي القيادي لمنصة THOTH، ووضعك الحالي هو وضع الوكيل (Agent Mode). مهمتك أنك تنفّذ وتبني أي حاجة يطلبها المستخدم بنفسك من الأول للآخر، من غير أسئلة توضيحية ومن غير تأجيل:
-- قاعدة التنفيذ الذاتي (إلزامية): حلّل الطلب بصمت، خطّط داخليًا، ونفّذ كامل في أول رد. ممنوع منعًا باتًا أن تسأل «هل تريد أن...؟» أو تطلب تأكيدًا أو تقسّم العمل على ردود متعددة أو تقول «أخبرني بالمزيد لأبدأ». سلّم المنتج النهائي جاهزًا من أول مرة، ولو في نقطة غير واضحة اختار فيها الأنسب بنفسك بذكاء وكمّل واذكر قرارك باختصار في النهاية.
-- قدرات البناء (كلها مسموحة ومطلوبة في هذا الوضع): موقع كامل، تطبيق ويب، لعبة كاملة، لوحة تحكم، متجر إلكتروني، حاسبة، أداة دراسية، مؤقت أو منبه، كويز تفاعلي، صفحة هبوط، معرض أعمال، مولد كلمات مرور أو ألوان، محول وحدات، أي فكرة أخرى مهما كانت غير تقليدية — إذا كان يمكن بناؤه في ملف واحد فابنِه كاملًا فورًا.
-- صيغة التسليم لأي بناء برمجي (سواء طلب المستخدم البناء صراحةً أو كان واضحًا أنه يريد شيئًا يُعمَل): افتح بجملة قصيرة واثقة تشرح ماذا ستبني، ثم قدم الكود كاملًا داخل بلوك كود واحد فقط بلغة html — ملف HTML واحد متكامل يحتوي CSS وJavaScript داخليًا (يُسمح بـ Tailwind CSS وخطوط Google Fonts عبر CDN) — وبعد الكود اكتب قسمًا صغيرًا بعنوان «📋 إيه اللي جواه؟» يسرد أبرز المميزات في نقاط مختصرة مع سطر عن طريقة الاستخدام وفكرة تطوير واحدة للمستقبل. نظام المعاينة الفوري ArtifactViewer سيعرض منتجك للمستخدم مباشرة، فتأكد أن الكود سليم وقابل للتشغيل فورًا.
-- مستوى الجودة في كل بناء (إلزامي — مستوى الاستوديوهات العالمية): سلّم منتجًا حقيقيًا غنيًا ومتكاملًا، مش نموذجًا مختصرًا: حجم الكود المتوقع من 600 إلى 1000 سطر، وأي منتج أقل من 500 سطر يُعتبر تسليمًا مرفوضًا مهما بدا الطلب بسيطًا. ولو الطلب بسيط، ثرِه بنفسك بإضافات قيّمة تلقائيًا (لوحة إحصائيات، إعدادات، مستويات صعوبة، ثيمات ألوان، شاشة ترحيب، مؤثرات) حتى يبلغ الحد الأدنى — مع كل الشاشات والحالات (رئيسية كاملة + فراغ وخطأ وتحميل ونجاح)، ومحتوى حقيقي غني من أول تشغيل — ممنوع نهائيًا Lorem Ipsum أو نصوص الحشو أو الأزرار الشكلية التي لا تعمل.
-- التصميم البصري (فخامة إلزامية): هوية ألوان متناسقة بتدرجات احترافية + خط عربي فاخر من Google Fonts (مثل Cairo أو Tajawal) + واجهة RTL كاملة لو المستخدم كتب بالعربية + تأثير الزجاجية الشفافة وظلال ناعمة وزوايا دائرية + حركات انتقال وظهور سلسة (animations) + تأثيرات hover وactive لكل زر وكارت + أيقونات SVG أو إيموجي مناسبة + تجاوب كامل من أصغر موبايل إلى أكبر شاشة.
-- الوظائف (كل حاجة تشتغل فعلاً): كل زر وكل تفاعل يعمل من أول تشغيل بلا أخطاء؛ احفظ البيانات في localStorage داخل المنتج نفسه لو كان لذلك معنى؛ ادعم اللمس والكيبورد وتعامل بذكاء مع المدخلات الخاطئة. الألعاب: نقاط ومستويات وأفضل نتيجة محفوظة إلزاميًا في localStorage وإعادة تشغيل وأصوات اختيارية بـ Web Audio API ولوحة نتائج. الأدوات والداشبوردات: كروت إحصائيات وفلترة وترتيب وبحث. المواقع: أقسام متعددة كاملة بالمحتوى.
-- ممنوع منعًا باتًا: كود ناقص أو مبسط، أو TODO، أو «أكمل بنفسك»، أو عبارة «ده مثال بسيط ممكن تطوره لاحقًا» — سلّم النسخة النهائية الكاملة جاهزة للاستخدام من أول مرة، ولو الطلب ضخم جدًا فعّل الأهم أولًا داخل نفس المنتج بدون أي نواقص فيما سلمته.
-- لو الطلب ليس بناء برمجيًا (سؤال، تحليل، بحث، كتابة، خطة، ترجمة، شرح، حساب، أو أي مهمة ذهنية): اشتغل كوكيل خبير شامل — نفّذ المهمة نفسها كاملة بعمق واحترافية في نفس الرد وقدّم نتيجة جاهزة للاستخدام فورًا، وليس مجرد نصائح عن كيفية فعلها.
-- زود قيمة كل رد: اختم دائمًا بخطوة تالية عملية واحدة أو اقتراح ذكي يضاعف فائدة ما بنيته للمستخدم.
-- التزم بكل قواعد THOTH الثابتة أدناه حرفيًا (هوية الشركة، أدوات الدراسة والوسوم، لغة المستخدم وأسلوبها الودود، ومنع ذكر أسماء النماذج أو الشركات الأخرى).` + "\n\n" + baseSystemInstruction;
+        activeSystemInstruction = THOTH_AGENT_MODE_INSTRUCTION + "\n\n" + baseSystemInstruction;
       }
 
       let genConfig: any = {
@@ -10057,6 +10062,9 @@ app.all("/api/*", (req, res) => {
     // Declared here (handler top) so branch wiring never hits a TDZ.
     let livePushTurn: ((role: 'user' | 'model', text: string) => void) | null = null;
     let liveRouteText: ((text: string) => void) | null = null;
+    // [TASK 45] in-call working Agent + file attachments (assistant branch wires them).
+    let liveRunAgent: ((query: string, source: 'typed' | 'voice') => Promise<void>) | null = null;
+    let liveHandleFile: ((msg: any) => Promise<void>) | null = null;
     let effectiveDeviceId = '';
     let clientIp = '';
     let todayStr = '';
@@ -10471,6 +10479,154 @@ app.all("/api/*", (req, res) => {
         };
         livePushTurn = pushRecentTurn;
         liveRouteText = maybeRouteToExtended;
+        // ─── [TASK 45 — LIVE AGENT + FILE ATTACHMENTS] ─────────────────────
+        // (1) Typed text with agent:true -> full THOTH Agent build pipeline
+        // (own agentRun quota bucket; guests blocked server-side — red line).
+        // (2) SPOKEN build requests detected from the official input
+        // transcription on turn_complete (strong build verbs only, guard
+        // against summary/quiz phrasing, 20s cooldown, max 3 per call).
+        // (3) Attached files reach the voice model: images enter the session
+        // directly, text-like files are decoded, binaries bridge through the
+        // Google Files API + a fast Gemini understanding pass.
+        const BUILD_INTENT_RE = /(ابني\s?لي|ابنيلي|بنيلي|اصنع\s?لي|اصنعلي|صمم\s?لي|صمملي|اكتب\s?لي|اكتبلي|ابدأ\s?في\s?بناء|اعمل\s?لعبه|اعمل\s?لعبة|اعمل\s?موقع|اعمل\s?تطبيق|اعمل\s?متجر|اعمل\s?حاسبه|اعمل\s?حاسبة)\s*[^.\n]{0,45}\s*(موقع|لعبه|لعبة|تطبيق|صفحه|صفحة|ويب\s?سايت|سايت|لوحه\s?تحكم|لوحة\s?تحكم|متجر|حاسبه|حاسبة|اداة|أداة|كويز|لعبه\s?كامله)|\b(build|create|make|develop)\s+(me\s+)?(a\s+)?(website|web\s?app|game|dashboard|landing\s?page|calculator|tool|quiz|app)\b/i;
+        const NOT_BUILD_RE = /(لخص|ملخص|ترجم|ترجمة|اشرح لية|اسألني|اختبرني|اختبار على|أسئلة على|اسئلة على)/;
+        let agentBusy = false;
+        let agentRunsThisCall = 0;
+        let lastVoiceAgentAt = 0;
+        let voiceTurnBuffer = '';
+        let filesThisCall = 0;
+
+        const runAgentBuild = async (query: string, source: 'typed' | 'voice') => {
+          if (agentBusy) {
+            try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'busy', message: 'الوكيل بيشتغل على طلب حاليًا — استنى يخلص الأول.' })); } catch {}
+            return;
+          }
+          if (agentRunsThisCall >= 3) {
+            try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'cap', message: 'وصلت للحد الأقصى (3 عمليات بناء) في نفس المكالمة.' })); } catch {}
+            return;
+          }
+          if (isGuest || !userId) {
+            // RED LINE: agentRun is registered-users only (guest quota = 0).
+            try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'login_required', message: 'الوكيل الذكي متاح للمستخدمين المسجلين — سجل دخول أو اعمل حساب مجاني.' })); } catch {}
+            return;
+          }
+          agentBusy = true;
+          try { ws.send(JSON.stringify({ type: 'agent_status', state: 'started', source })); } catch {}
+          try {
+            const agentIp = clientIp || (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1').toString().split(',')[0].trim();
+            const quota = await checkAndIncrementUsageServerSide(userId, agentIp, 'agentRun', 1);
+            if (!quota.allowed) {
+              try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'quota', message: quota.errorText || 'وصلت لحد الاستخدام اليومي لوضع الوكيل.' })); } catch {}
+              return;
+            }
+            agentRunsThisCall++;
+            const profileCtx = await getUserProfileContext(userId);
+            const liveAgentInstruction = THOTH_AGENT_MODE_INSTRUCTION
+              + "\n\n- أنت الآن داخل مكالمة صوتية حية في THOTH: سلّم المنتج داخل المحادثة النصية للمكالمة كما هو محدد أعلاه (بلوك كود html واحد كامل)، والمكالمة الصوتية مستمرة بالتوازي — التزم بلغة المستخدم."
+              + profileCtx;
+            const agentContents: any[] = [];
+            for (const t of recentTurns.slice(-6)) agentContents.push({ role: t.role, parts: [{ text: t.text }] });
+            agentContents.push({ role: 'user', parts: [{ text: String(query).slice(0, 4000) }] });
+            const AGENT_MODEL_CHAIN = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-pro-preview'];
+            let resultText = '';
+            let lastErr: any = null;
+            for (const m of AGENT_MODEL_CHAIN) {
+              try {
+                const r = await generateContentWithTracking({ model: m, contents: agentContents, config: { systemInstruction: liveAgentInstruction, maxOutputTokens: 16384 } }, userId, 'LiveAgent', 'Free');
+                if (r && r.text && String(r.text).trim()) { resultText = String(r.text); break; }
+              } catch (e: any) { lastErr = e; console.warn('[GEMINI LIVE] agent build model failed:', m, e?.message || e); }
+            }
+            if (!resultText) throw lastErr || new Error('agent chain exhausted');
+            try { ws.send(JSON.stringify({ type: 'agent_result', ok: true, text: resultText })); } catch {}
+            pushRecentTurn('model', 'أنت (وضع الوكيل): نفّذت طلب البناء كاملًا وظهر المنتج الجاهز للمستخدم في المحادثة النصية مع معاينة تفاعلية.');
+            try {
+              await session?.sendClientContent({
+                turns: [{ role: 'user', parts: [{ text: '【نظام الوكيل — تنبيه داخلي】تم تنفيذ طلب البناء («' + String(query).slice(0, 120) + '») بنجاح كامل، والمنتج جاهز ظاهر أمام المستخدم في المحادثة النصية مع معاينة تفاعلية. أخبر المستخدم بجملة قصيرة جدًا أن البناء خلص وظاهر عنده.' }] }],
+                turnComplete: true
+              });
+            } catch (e: any) { console.warn("[GEMINI LIVE] agent completion note notice:", e?.message || e); }
+          } catch (e: any) {
+            console.warn('[GEMINI LIVE] agent build failed:', e?.message || e);
+            try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'build_failed', message: 'تعذر إتمام البناء الآن بسبب ضغط الخدمة — جرب تاني بعد شوية.' })); } catch {}
+          } finally {
+            agentBusy = false;
+          }
+        };
+
+        const sendFileAck = (ok: boolean, name: string, message: string) => {
+          try { ws.send(JSON.stringify({ type: 'file_ack', ok, name, message })); } catch {}
+        };
+        const FILE_BRIDGE_PROMPT = 'حلّل هذا الملف تحليلًا كاملًا مفصلًا وانقل محتواه الفعلي كنص منظم يكفي لوكيل صوتي لمناقشته مع المستخدم: المحتوى، النقاط الأساسية، الأرقام والجداول، والاستنتاجات. اكتب المحتوى نفسه لا وصفًا سطحيًا عنه.';
+        const isTextLikeFile = (mimeType: string, fileName: string) =>
+          mimeType.startsWith('text/') || /json|xml|javascript|ecmascript|csv|x-sh|typescript|markdown|sql/.test(mimeType) || /\.(txt|md|csv|json|xml|js|ts|jsx|tsx|py|java|c|cpp|cs|h|html|css|sql|sh|yml|yaml)$/i.test(fileName);
+
+        const handleLiveFile = async (msg: any) => {
+          const fileName = String(msg.name || 'file').slice(0, 120);
+          const mimeType = String(msg.mimeType || 'application/octet-stream').slice(0, 100);
+          let data = String(msg.data || '');
+          const dcIdx = data.indexOf('base64,');
+          if (dcIdx !== -1) data = data.slice(dcIdx + 7);
+          data = data.replace(/\s/g, '');
+          const caption = String(msg.caption || '').slice(0, 1000).trim();
+          if (filesThisCall >= 8) { sendFileAck(false, fileName, 'وصلت للحد الأقصى (8 ملفات) في نفس المكالمة.'); return; }
+          const byteLen = Math.floor(data.length * 3 / 4);
+          if (!data || byteLen < 8) { sendFileAck(false, fileName, 'الملف فاضي أو مش مقروء.'); return; }
+          if (byteLen > 18 * 1024 * 1024) { sendFileAck(false, fileName, 'الملف أكبر من 18 ميجا — قسّمه أو ارفعه في المحادثة الرئيسية.'); return; }
+          filesThisCall++;
+          sendFileAck(true, fileName, '');
+          try {
+            if (!session) { sendFileAck(false, fileName, 'المكالمة مش جاهزة لاستقبال الملفات.'); return; }
+            // (1) Images enter the LIVE session directly as a real visual turn.
+            if (mimeType.startsWith('image/')) {
+              try {
+                await session.sendClientContent({
+                  turns: [{ role: 'user', parts: [ ...(caption ? [{ text: caption }] : []), { text: '【المستخدم أرفق صورة باسم: ' + fileName + '】' + (caption ? '' : ' خدها في اعتبارك وعلّق عليها أو استخدمها عند الحاجة.') }, { inlineData: { mimeType, data } } ] }],
+                  turnComplete: !!caption
+                });
+                pushRecentTurn('user', caption ? (caption + ' [صورة مرفقة: ' + fileName + ']') : ('أرفقت صورة: ' + fileName));
+                return;
+              } catch (e: any) {
+                console.warn('[GEMINI LIVE] direct image turn failed — bridging:', e?.message || e);
+              }
+            }
+            // (2) Text-like files are decoded and injected as text context.
+            let contextText = '';
+            if (isTextLikeFile(mimeType, fileName)) {
+              const decoded = Buffer.from(data, 'base64').toString('utf8').slice(0, 120000);
+              contextText = '【ملف مرفق من المستخدم: ' + fileName + '】\n' + decoded;
+            } else {
+              // (3) Binary bridge: Google Files API -> fast Gemini understanding -> text.
+              const buffer = Buffer.from(data, 'base64');
+              let bridgeParts: any[] = [];
+              try {
+                const up = await uploadBufferToGoogleFilesApi(buffer, fileName, mimeType);
+                bridgeParts = [{ fileData: { fileUri: up.uri, mimeType: up.mimeType || mimeType } }, { text: FILE_BRIDGE_PROMPT }];
+              } catch (upErr: any) {
+                console.warn('[GEMINI LIVE] Files API upload failed — inline fallback:', upErr?.message || upErr);
+                bridgeParts = [{ inlineData: { mimeType, data } }, { text: FILE_BRIDGE_PROMPT }];
+              }
+              let bridgeText = '';
+              for (const m of ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']) {
+                try {
+                  const r = await generateContentWithTracking({ model: m, contents: [{ role: 'user', parts: bridgeParts }], config: {} }, userId || 'guest', 'LiveFileBridge', 'Free');
+                  if (r && r.text && String(r.text).trim()) { bridgeText = String(r.text); break; }
+                } catch (e: any) { console.warn('[GEMINI LIVE] file bridge model failed:', m, e?.message || e); }
+              }
+              if (!bridgeText) { sendFileAck(false, fileName, 'معرفتش أقرا الملف ده — جرب ملف تاني أو ارفعه في المحادثة الرئيسية.'); return; }
+              contextText = '【المستخدم أرفق ملف باسم ' + fileName + ' (' + mimeType + '). محتواه كالتالي:\n' + bridgeText.slice(0, 40000) + '\n— نهاية محتوى الملف】';
+            }
+            await session.sendClientContent({
+              turns: [{ role: 'user', parts: [{ text: (caption ? caption + '\n\n' : '') + contextText }] }],
+              turnComplete: !!caption
+            });
+            pushRecentTurn('user', (caption ? caption + ' — ' : '') + 'أرفقت ملف: ' + fileName);
+          } catch (e: any) {
+            console.warn('[GEMINI LIVE] file handling failed:', e?.message || e);
+            sendFileAck(false, fileName, 'حصلت مشكلة في معالجة الملف.');
+          }
+        };
+        liveRunAgent = runAgentBuild;
+        liveHandleFile = handleLiveFile;
 
         const SETUP_TIMEOUT_MS = 12000; // abandon a silent/hung model after 12s
 
@@ -10577,7 +10733,7 @@ app.all("/api/*", (req, res) => {
             model: modelName,
             config: {
               responseModalities: [Modality.AUDIO],
-                systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. [رؤية حقيقية] أنت ترى فعلاً: إذا وصلت إطارات من كاميرا المستخدم أو شاشته فانظر فيها وصِف محتواها وتفاعل معه بثقة — وممنوع منعًا باتًا أن تقول إنك لا ترى أو أن الكاميرا لا تعمل. [بناء وتطوير] إذا طلب المستخدم بناء تطبيق أو لعبة أو كتابة كود، اكتب الكود مباشرة في المحادثة النصية داخل المكالمة، وإذا كان المشروع كبيرًا وجّهه بلطف لوضع «الوكيل» في المحادثة الرئيسية لبناء تطبيق جاهز كامل — ولا تقول «فشل» أبدًا. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي). قواعد إلزامية: مقر الشركة أسيوط بمصر وليس لها أي فرع فعلي وكل خدماتها أونلاين. اسم المؤسس «أحمد أشرف حمزة محمد» يُذكر فقط إذا سأل المستخدم عن المؤسس بسؤال صريح ومباشر، ويكون آخر جملة في الرد خالصاً بدون تفاصيل إضافية عنه." + voiceTeachDirective,
+                systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. [رؤية حقيقية] أنت ترى فعلاً: إذا وصلت إطارات من كاميرا المستخدم أو شاشته فانظر فيها وصِف محتواها وتفاعل معه بثقة — وممنوع منعًا باتًا أن تقول إنك لا ترى أو أن الكاميرا لا تعمل. [بناء وتطوير] إذا طلب المستخدم بناء تطبيق أو لعبة أو موقع أو كتابة كود، قول جملة قصيرة واثقة إنك هتبدأ البناء فورًا — نظام الوكيل الداخلي في THOTH بينفّذ البناء كاملًا تلقائيًا والمنتج الجاهز بيظهر في المحادثة النصية للمكالمة، فممنوع تعتذر أو تقول إنك مش قادر — ولو المستخدم سأل عن النتيجة وجّهه بلطف للمحادثة النصية في نفس المكالمة. اكتب أكوادًا داخل المحادثة فقط لو الكود بسيط جدًا (سطر أو سطرين). وممنوع منعًا باتًا كلمة «فشل» أو الاعتذار الطويل. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي). قواعد إلزامية: مقر الشركة أسيوط بمصر وليس لها أي فرع فعلي وكل خدماتها أونلاين. اسم المؤسس «أحمد أشرف حمزة محمد» يُذكر فقط إذا سأل المستخدم عن المؤسس بسؤال صريح ومباشر، ويكون آخر جملة في الرد خالصاً بدون تفاصيل إضافية عنه." + voiceTeachDirective,
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: finalVoiceName } },
               },
@@ -10656,6 +10812,8 @@ app.all("/api/*", (req, res) => {
                    if (inTr && inTr.text && ws.readyState === WebSocket.OPEN) {
                      ws.send(JSON.stringify({ type: 'input_transcription', text: inTr.text }));
                      pushRecentTurn('user', inTr.text);
+                     // [TASK 45] accumulate the spoken turn for build detection.
+                     voiceTurnBuffer = (voiceTurnBuffer + ' ' + inTr.text).slice(-1500);
                    }
                    const outTr = message.serverContent.outputTranscription;
                    if (outTr && outTr.text && ws.readyState === WebSocket.OPEN) {
@@ -10682,6 +10840,16 @@ app.all("/api/*", (req, res) => {
                    }
                    if (message.serverContent.turnComplete && ws.readyState === WebSocket.OPEN) {
                       ws.send(JSON.stringify({ type: 'turn_complete' }));
+                      // [TASK 45] spoken build request -> in-call Agent runs.
+                      const spokenTurn = voiceTurnBuffer.trim();
+                      voiceTurnBuffer = '';
+                      if (spokenTurn.length >= 5 && !agentBusy && agentRunsThisCall < 3
+                          && Date.now() - lastVoiceAgentAt > 20000
+                          && BUILD_INTENT_RE.test(spokenTurn) && !NOT_BUILD_RE.test(spokenTurn)) {
+                        lastVoiceAgentAt = Date.now();
+                        console.log("[GEMINI LIVE] voice build intent -> in-call agent");
+                        runAgentBuild(spokenTurn, 'voice');
+                      }
                    }
                 }
               },
@@ -10772,6 +10940,17 @@ app.all("/api/*", (req, res) => {
           // [GEMINI 3.8 LIVE UPGRADE] typed chat text + visual frames feed
           // the SAME Live session (one logical Agent — no separate chat or
           // visual path). hidden:true = context plumbing, never surfaced.
+          // [TASK 45] in-call Agent: typed build request (agent toggle ON).
+          if (msg.type === "text" && msg.text && msg.agent === true) {
+            const textIn = String(msg.text).slice(0, 4000);
+            if (liveRunAgent) { livePushTurn?.('user', textIn); liveRunAgent(textIn, 'typed'); }
+            return;
+          }
+          // [TASK 45] file attachment inside the call -> model context bridge.
+          if (msg.type === "file" && msg.data) {
+            if (liveHandleFile) await liveHandleFile(msg);
+            return;
+          }
           if (msg.type === "text" && msg.text && session) {
             const textIn = String(msg.text).slice(0, 4000);
             try {

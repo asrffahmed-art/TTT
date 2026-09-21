@@ -64,6 +64,22 @@ const JITTER_PREBUFFER_S = 0.15;  // initial play delay per speech burst (anti-s
 const BARGE_IN_RMS = 0.02;
 const STALE_QUEUE_S = 0.25;       // queue finished this long ago -> force-unblock mic
 
+// [TASK 45 — VOICE/MIC QUALITY] gentle capture & playback conditioning: a
+// one-pole high-pass (fc≈75Hz) removes handling rumble / HVAC hum before the
+// mic stream is encoded, and a soft-knee limiter (knee 0.95) replaces harsh
+// hard-clipping when the browser AGC over-boosts loud speech. The playback
+// path gets an even gentler limiter (knee 0.97) so loud model peaks never
+// square-clip in the DAC. Both are transparent below the knee.
+const HPF_CUTOFF_HZ = 75;
+const IN_SOFT_KNEE = 0.95;
+const OUT_SOFT_KNEE = 0.97;
+function softClipSample(s: number, knee: number): number {
+  const a = s < 0 ? -s : s;
+  if (a <= knee) return s;
+  const shaped = knee + (1 - knee) * (1 - Math.exp(-(a - knee) / (1 - knee)));
+  return s < 0 ? -shaped : shaped;
+}
+
 // Inline AudioWorklet processor: buffers 1600 samples = exactly 100 ms at
 // 16 kHz, then posts {rms, data} to the main thread. Native-audio Live models
 // were observed to emit empty/interrupted turns when fed larger chunks, while
@@ -106,14 +122,21 @@ function resampleTo16k(input: Float32Array, inRate: number): Float32Array {
   const ratio = inRate / INPUT_RATE;
   const outLen = Math.floor(input.length / ratio);
   const out = new Float32Array(outLen);
+  // [TASK 45] one-pole anti-alias low-pass (fc≈7kHz) before decimation —
+  // native-rate fallback path only; prevents high-frequency fold-back that
+  // made the fallback path sound gritty.
+  let lpY = 0;
+  const lpAlpha = 1 - Math.exp(-2 * Math.PI * 7000 / inRate);
+  const lp = new Float32Array(input.length);
+  for (let i = 0; i < input.length; i++) { lpY += lpAlpha * (input[i] - lpY); lp[i] = lpY; }
   for (let i = 0; i < outLen; i++) {
     const t = i * ratio;
     const i1 = Math.floor(t);
     const p = t - i1;
-    const x0 = input[Math.max(0, i1 - 1)];
-    const x1 = input[i1];
-    const x2 = input[Math.min(input.length - 1, i1 + 1)];
-    const x3 = input[Math.min(input.length - 1, i1 + 2)];
+    const x0 = lp[Math.max(0, i1 - 1)];
+    const x1 = lp[i1];
+    const x2 = lp[Math.min(input.length - 1, i1 + 1)];
+    const x3 = lp[Math.min(input.length - 1, i1 + 2)];
     const a = -0.5 * x0 + 1.5 * x1 - 1.5 * x2 + 0.5 * x3;
     const b = x0 - 2.5 * x1 + 2 * x2 - 0.5 * x3;
     const c = -0.5 * x0 + 0.5 * x2;
@@ -162,6 +185,11 @@ export class LiveCallEngine {
   // [TASK 44] adaptive jitter pre-buffer: grows on observed underruns (mobile
   // networks), capped at 400 ms. Resets when the call ends.
   private prebufferS = JITTER_PREBUFFER_S;
+
+  // [TASK 45] DC/rumble high-pass state — persists across frames so the
+  // one-pole filter stays continuous (no per-frame clicks).
+  private hpX = 0;
+  private hpY = 0;
 
   constructor(cb: LiveCallEngineCallbacks) {
     this.cb = cb;
@@ -433,10 +461,21 @@ export class LiveCallEngine {
     if (rms < NOISE_GATE_RMS) this.stats.silentFrames++;
 
     const pcm = this.usingNativeFallback ? resampleTo16k(data, ctxRate) : data;
+    // [TASK 45] one-pole high-pass (fc≈75Hz) — kills DC offset, handling
+    // rumble and HVAC hum so the model's ASR gets a clean voice band.
+    const hpAlpha = Math.exp(-2 * Math.PI * HPF_CUTOFF_HZ / Math.max(8000, ctxRate));
+    for (let i = 0; i < pcm.length; i++) {
+      const x = pcm[i];
+      this.hpY = hpAlpha * (this.hpY + x - this.hpX);
+      this.hpX = x;
+      pcm[i] = this.hpY;
+    }
     const bytes = new Uint8Array(pcm.length * 2);
     const view = new DataView(bytes.buffer);
     for (let i = 0; i < pcm.length; i++) {
-      const s = Math.max(-1, Math.min(1, pcm[i]));
+      // [TASK 45] soft-knee limiter — loud AGC-boosted speech saturates
+      // smoothly instead of harsh digital clipping.
+      const s = softClipSample(Math.max(-1, Math.min(1, pcm[i])), IN_SOFT_KNEE);
       view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
     }
     let binary = '';
@@ -497,7 +536,11 @@ export class LiveCallEngine {
       if (int16.length === 0) return;
 
       const float32 = new Float32Array(int16.length);
-      for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
+      for (let i = 0; i < int16.length; i++) {
+        // [TASK 45] gentle output limiter — model peaks saturate smoothly
+        // instead of hard-clipping in the DAC (knee 0.97 is transparent).
+        float32[i] = softClipSample(int16[i] / 32768.0, OUT_SOFT_KNEE);
+      }
 
       const currentTime = ctx.currentTime;
       const freshBurst = this.activeSources.length === 0 || this.nextPlayTime < currentTime;

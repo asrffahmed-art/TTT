@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Mic, MicOff, PhoneOff, Loader2, Volume2, Check, ChevronDown, RefreshCw, Play, Clock, Lock, LogIn, Sparkles, AlertCircle, GraduationCap, ScrollText, MessageSquare, MonitorUp, Video, X, Brain, Send, SwitchCamera
+  Mic, MicOff, PhoneOff, Loader2, Volume2, Check, ChevronDown, RefreshCw, Play, Clock, Lock, LogIn, Sparkles, AlertCircle, GraduationCap, ScrollText, MessageSquare, MonitorUp, Video, X, Brain, Send, SwitchCamera, Bot, Paperclip
 } from 'lucide-react';
+import { ArtifactViewer } from './ArtifactViewer';
 import { useLanguage } from '../lib/LanguageContext';
 import { getDeviceId } from '../lib/otpService';
 import { liveWsUrl } from '../services/wsUrl';
@@ -40,7 +41,7 @@ export function VoiceDialog({
   const isAr = language === 'ar';
   const [voiceState, setVoiceState] = useState<'initial' | 'connecting' | 'listening' | 'speaking' | 'error'>('initial');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [transcripts, setTranscripts] = useState<{role: 'user'|'model', text: string}[]>([]);
+  const [transcripts, setTranscripts] = useState<{role: 'user'|'model', text: string; kind?: 'agent'; code?: string}[]>([]);
   const [isMuted, setIsMuted] = useState(false);
   const [showVoiceMenu, setShowVoiceMenu] = useState(false);
   const [needUserGesture, setNeedUserGesture] = useState(false);
@@ -85,7 +86,26 @@ export function VoiceDialog({
   };
   const [mediaHint, setMediaHint] = useState<string>('');
   const mediaHintTimerRef = useRef<any>(null);
-  const transcriptsRef = useRef<{role: 'user'|'model', text: string}[]>([]);
+
+  // ─── [TASK 45 — LIVE AGENT + FILES] a REAL working agent and any-file
+  // attachments inside the call. agentMode routes typed messages through the
+  // full THOTH Agent build pipeline (server enforces the agentRun quota);
+  // agent results render as an artifact card with a live preview; attached
+  // files (image/PDF/doc/audio/code) reach the voice model through the
+  // official session channels.
+  const [agentMode, setAgentMode] = useState(false);
+  const agentModeRef = useRef(false);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [toastMsg, setToastMsg] = useState('');
+  const toastTimerRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [previewArtifact, setPreviewArtifact] = useState<{ code: string; title: string } | null>(null);
+  const showToast = (m: string) => {
+    setToastMsg(m);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToastMsg(''), 5000);
+  };
+  const transcriptsRef = useRef<{role: 'user'|'model', text: string; kind?: 'agent'; code?: string}[]>([]);
   const extendedThinkingRef = useRef(false);
   useEffect(() => { transcriptsRef.current = transcripts; }, [transcripts]);
 
@@ -391,6 +411,27 @@ export function VoiceDialog({
       scheduleAutoClose();
       // If nothing is playing right now, the farewell is already over.
       setTimeout(() => { if (autoCloseRef.current) doAutoClose(); }, 2500);
+    } else if (msg.type === 'agent_status' && msg.state === 'started') {
+      // [TASK 45] voice-triggered (or typed) agent build started.
+      setAgentBusy(true);
+    } else if (msg.type === 'agent_result') {
+      setAgentBusy(false);
+      setInteractionBusy(false);
+      if (msg.ok && msg.text) {
+        const full = String(msg.text);
+        const codeMatch = /```(?:html|htm)?\s*\n([\s\S]*?)```/i.exec(full);
+        const head = full.replace(/```[\s\S]*?```/g, '').trim();
+        const summary = (head || 'الوكيل خلص البناء — المنتج جاهز.').slice(0, 400);
+        setTranscripts(prev => [...prev, { role: 'model', text: summary, kind: 'agent', code: codeMatch ? codeMatch[1] : undefined }]);
+        try { flushLiveTurns(); } catch {}
+        dispatchLiveTurn('model', full);
+      } else if (msg.error === 'busy' || msg.error === 'cap' || msg.error === 'quota' || msg.error === 'build_failed') {
+        showToast(msg.message || (isAr ? 'تعذر تنفيذ طلب الوكيل' : 'Agent request failed'));
+      } else {
+        showToast(msg.message || (isAr ? 'الوكيل الذكي متاح للمستخدمين المسجلين — سجل دخول أو اعمل حساب مجاني 🤖' : 'Agent is for registered users 🤖'));
+      }
+    } else if (msg.type === 'file_ack') {
+      if (!msg.ok) showToast(msg.message || (isAr ? 'تعذر إرسال الملف' : 'File failed'));
     } else if (msg.type === 'error') {
       setErrorMessage(msg.message || "حدث خطأ أثناء الاتصال الصوتي");
       stopSession();
@@ -582,6 +623,17 @@ export function VoiceDialog({
     if (!text || !isSessionActiveRef.current) return;
     const engine = engineRef.current;
     if (!engine) return;
+    // [TASK 45] agent toggle ON -> the typed request runs the FULL THOTH
+    // Agent build pipeline server-side (own agentRun quota; guests blocked).
+    if (agentModeRef.current && !isGuest) {
+      if (!engine.sendRaw({ type: 'text', text, agent: true })) return;
+      pendingUserTurnRef.current = (pendingUserTurnRef.current + ' ' + text).trim();
+      setTranscripts(prev => [...prev, { role: 'user', text }]);
+      setChatInput('');
+      setAgentBusy(true);
+      setInteractionBusy(true);
+      return;
+    }
     if (!engine.sendRaw({ type: 'text', text })) return;
     pendingUserTurnRef.current = (pendingUserTurnRef.current + ' ' + text).trim();
     setTranscripts(prev => [...prev, { role: 'user', text }]);
@@ -657,6 +709,53 @@ export function VoiceDialog({
       });
   };
 
+  // [TASK 45] in-call agent toggle — guests get an explicit hint (the
+  // server blocks agentRun for guests anyway — red line intact).
+  const toggleAgentMode = () => {
+    if (isGuest) {
+      showToast(isAr ? 'الوكيل الذكي متاح للمستخدمين المسجلين — سجل دخول أو اعمل حساب مجاني 🤖' : 'Agent is for registered users — sign in first 🤖');
+      return;
+    }
+    const next = !agentModeRef.current;
+    agentModeRef.current = next;
+    setAgentMode(next);
+    if (next) showToast(isAr ? 'وضع الوكيل شغال — قوله اعمل أو ابني أي حاجة وهيبنيها كاملة هنا 🤖' : 'Agent mode ON — ask it to build anything right here 🤖');
+  };
+
+  // [TASK 45] attach ANY file to the live call — images enter the session
+  // directly; PDFs/docs/code bridge through the server so the voice model
+  // can actually read them. An optional typed caption becomes the question.
+  const onPickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    try { e.target.value = ''; } catch {}
+    if (!f || !isSessionActiveRef.current) return;
+    if (f.size > 18 * 1024 * 1024) {
+      showToast(isAr ? 'الملف أكبر من 18 ميجا — جرب ملف أصغر' : 'File is larger than 18MB');
+      return;
+    }
+    const engine = engineRef.current;
+    if (!engine) return;
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = reject;
+        r.readAsDataURL(f);
+      });
+      const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      const caption = chatInput.trim();
+      if (caption) setChatInput('');
+      const sent = engine.sendRaw({ type: 'file', name: f.name, mimeType: f.type || 'application/octet-stream', data: b64, caption });
+      if (!sent) { showToast(isAr ? 'تعذر إرسال الملف الآن' : 'Could not send the file'); return; }
+      const label = '📎 ' + f.name + (caption ? ' — ' + caption : '');
+      pendingUserTurnRef.current = (pendingUserTurnRef.current + ' ' + label).trim();
+      setTranscripts(prev => [...prev, { role: 'user', text: label }]);
+      if (caption) setInteractionBusy(true);
+    } catch {
+      showToast(isAr ? 'تعذر قراءة الملف' : 'Could not read the file');
+    }
+  };
+
   const handleClose = () => {
     stopSession();
     
@@ -728,6 +827,16 @@ export function VoiceDialog({
               🧠 {isAr ? 'تفكير موسّع' : 'Extended'}
             </span>
           )}
+          {agentMode && !agentBusy && (
+            <span className="text-[10px] font-black text-amber-300 bg-amber-500/15 border border-amber-500/30 px-2 py-1 rounded-full">
+              🤖 {isAr ? 'وضع الوكيل' : 'Agent'}
+            </span>
+          )}
+          {agentBusy && (
+            <span className="text-[10px] font-black text-amber-300 bg-amber-500/15 border border-amber-500/30 px-2 py-1 rounded-full animate-pulse">
+              🤖 {isAr ? 'الوكيل بيشتغل' : 'Agent working'}
+            </span>
+          )}
         </div>
       </header>
 
@@ -776,9 +885,24 @@ export function VoiceDialog({
               <span className="text-xs font-black text-indigo-200 truncate">
                 {isAr ? 'نفس المحادثة — صوت ونص مع بعض' : 'One conversation — voice & text'}
               </span>
-              {interactionBusy && (
+              {interactionBusy && !agentBusy && (
                 <span className="text-[9px] font-black text-indigo-300/80 animate-pulse shrink-0">{isAr ? 'بيفكر...' : 'thinking...'}</span>
               )}
+              {agentBusy && (
+                <span className="text-[9px] font-black text-amber-300 animate-pulse shrink-0">{isAr ? 'الوكيل بيبنى...' : 'building...'}</span>
+              )}
+              <button
+                onClick={toggleAgentMode}
+                className={`text-[9px] font-black px-2 py-1 rounded-full border transition-all flex items-center gap-1 shrink-0 ${
+                  agentMode
+                    ? 'text-amber-200 bg-amber-500/20 border-amber-500/40'
+                    : 'text-white/50 bg-white/5 border-white/10 hover:text-white/80'
+                }`}
+                title={isAr ? 'وضع الوكيل — يبني أي حاجة كاملة داخل المكالمة' : 'Agent mode — builds full products in-call'}
+              >
+                <Bot className="w-3 h-3" />
+                {isAr ? 'وكيل' : 'Agent'}
+              </button>
               <button
                 onClick={toggleExtendedThinking}
                 className={`ms-auto text-[9px] font-black px-2 py-1 rounded-full border transition-all flex items-center gap-1 shrink-0 ${
@@ -811,6 +935,18 @@ export function VoiceDialog({
                         {t.text}
                       </p>
                     </div>
+                  ) : t.kind === 'agent' && t.code ? (
+                    <div key={i} className="flex justify-start" dir={isAr ? 'rtl' : 'ltr'}>
+                      <div className="max-w-[90%] rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.08] px-4 py-3 space-y-2.5">
+                        <p className="text-[13px] leading-relaxed text-white/90 whitespace-pre-wrap">{t.text}</p>
+                        <button
+                          onClick={() => setPreviewArtifact({ code: t.code!, title: isAr ? 'بناء الوكيل — THOTH' : 'Agent build — THOTH' })}
+                          className="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-black flex items-center justify-center gap-2 active:scale-95 transition-all"
+                        >
+                          🚀 {isAr ? 'فتح المعاينة التفاعلية' : 'Open live preview'}
+                        </button>
+                      </div>
+                    </div>
                   ) : (
                     <div key={i} className="flex justify-start" dir={isAr ? 'rtl' : 'ltr'}>
                       <p className="max-w-[85%] text-[13px] leading-relaxed text-white/90 bg-white/[0.06] border border-white/10 rounded-2xl px-4 py-2 whitespace-pre-wrap">
@@ -822,6 +958,16 @@ export function VoiceDialog({
               )}
             </div>
             <div className="flex items-center gap-2 pt-2 shrink-0" dir={isAr ? 'rtl' : 'ltr'}>
+              {/* [TASK 45] attach any file to the live call */}
+              <input ref={fileInputRef} type="file" className="hidden" onChange={onPickFile} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.md,.csv,.json,.xml,.js,.ts,.jsx,.tsx,.py,.java,.c,.cpp,.cs,.html,.css,.sql,.sh,.yml,.yaml,.xlsx,.pptx" />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={voiceState !== 'listening' && voiceState !== 'speaking'}
+                className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 flex items-center justify-center shrink-0 disabled:opacity-40 active:scale-95 transition-all"
+                title={isAr ? 'أرفق ملف (صورة، PDF، مستند، كود...)' : 'Attach a file (image, PDF, doc, code...)'}
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
               <input
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
@@ -1082,6 +1228,26 @@ export function VoiceDialog({
         </button>
 
       </footer>
+
+      {/* [TASK 45] transient toasts (agent / files) */}
+      {toastMsg && (
+        <div className="w-full px-4 pb-1 relative z-10 text-center">
+          <span className="text-[10px] font-bold text-amber-200 bg-amber-500/15 border border-amber-500/30 rounded-full px-3 py-1.5 inline-block max-w-[92vw] truncate">
+            {toastMsg}
+          </span>
+        </div>
+      )}
+
+      {/* [TASK 45] agent artifact live preview (fullscreen, over the call) */}
+      {previewArtifact && (
+        <ArtifactViewer
+          content={previewArtifact.code}
+          language="html"
+          title={previewArtifact.title}
+          isOpen={true}
+          onToggle={(o) => { if (!o) setPreviewArtifact(null); }}
+        />
+      )}
 
       {/* Guest Limit Modal Overlay */}
       {showLimitModal && (
