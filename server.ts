@@ -10360,13 +10360,27 @@ app.all("/api/*", (req, res) => {
         //            -> gemini-2.5-flash-native-audio-latest (long-proven
         //               production model), used ONLY if the primary is down.
         // Explicit ?model= requests (admin diagnostics etc.) still honoured.
-        // Failover happens ONLY before setup completes — never swaps models
-        // mid-conversation. Config, voices, quota and VAD flow unchanged.
+        // Failover happens ONLY before setup completes (except the DESIGNED
+        // transparent handoff: a mid-session complexity upgrade that keeps the
+        // client WebSocket and replays conversation context — one logical
+        // session for the user). Config, voices, quota and VAD flow unchanged.
+        // [GEMINI 3.8 LIVE UPGRADE] single config layer for Live model ids —
+        // never hard-coded in UI components.
+        const DEFAULT_LIVE_MODEL = "gemini-3.8-live";
+        const EXTENDED_THINKING_MODEL = "gemini-3.8-live-extended-thinking";
         const PRIMARY_LIVE_MODEL = "gemini-3.1-flash-live-preview";
         const FALLBACK_LIVE_MODEL = "gemini-2.5-flash-native-audio-latest";
         const requestedLiveModel = reqUrl.searchParams.get("model");
-        const targetModel = requestedLiveModel || PRIMARY_LIVE_MODEL;
-        console.log("[GEMINI LIVE] Connecting to model:", targetModel, "Voice:", finalVoiceName);
+        // ?thinking=1 -> whole session on the extended-thinking model.
+        // ?thinkingLevel=low|medium|high -> optional thinking_level tuning
+        // (attached ONLY when explicitly requested; unsupported values ignored).
+        // ?resumeHandle=<handle> -> resume a dropped Live session.
+        const thinkingParam = reqUrl.searchParams.get("thinking") === "1";
+        const rawThinkingLevel = (reqUrl.searchParams.get("thinkingLevel") || "").toLowerCase();
+        const thinkingLevelParam = (["low", "medium", "high"].includes(rawThinkingLevel) ? rawThinkingLevel : "");
+        const resumeHandleParam = (reqUrl.searchParams.get("resumeHandle") || "").trim().slice(0, 400);
+        const targetModel = requestedLiveModel || (thinkingParam ? EXTENDED_THINKING_MODEL : DEFAULT_LIVE_MODEL);
+        console.log("[GEMINI LIVE] Connecting to model:", targetModel, "Voice:", finalVoiceName, thinkingParam ? "(extended thinking)" : "");
 
         // True once the live session finished setup
         let setupCompleted = false;
@@ -10375,6 +10389,79 @@ app.all("/api/*", (req, res) => {
         // Guards the rare path where connect() rejects while an onerror-driven
         // failover is already running (prevents double fallback connects)
         let failoverEngaged = false;
+
+        // ─── [GEMINI 3.8 LIVE UPGRADE] one logical Agent: conversation memory,
+        // conservative complexity router and transparent model handoff ─────
+        // Voice, typed chat text and visual frames all feed the SAME Live
+        // session. recentTurns powers the handoff context replay. Capped.
+        let recentTurns: { role: 'user' | 'model'; text: string }[] = [];
+        let recentTurnsChars = 0;
+        const pushRecentTurn = (role: 'user' | 'model', text: string) => {
+          const t = String(text || '').trim();
+          if (!t) return;
+          recentTurns.push({ role, text: t });
+          recentTurnsChars += t.length;
+          while (recentTurns.length > 12 || recentTurnsChars > 4000) {
+            const dropped = recentTurns.shift();
+            if (!dropped) break;
+            recentTurnsChars -= dropped.text.length;
+          }
+        };
+        const buildContextReplay = (): string =>
+          recentTurns
+            .map((t) => (t.role === 'user' ? 'المستخدم: ' : 'أنت: ') + t.text)
+            .join('\n')
+            .slice(-3500);
+
+        // Model actually serving this client WS (updated on every setup).
+        let activeLiveModel: string = targetModel;
+        const isExtendedModel = (m: string) => m === EXTENDED_THINKING_MODEL;
+
+        // Conservative router (typed text only): multi-step / research /
+        // compare / verify / plan-exec asks upgrade to the extended-thinking
+        // model. One auto-upgrade per call, 15s cooldown, never downgraded.
+        const COMPLEX_TASK_RE = /(قارن|مقارنة|بحث شامل|حلل|تحليل معمق|خطوة بخطوة|تحقق من النتيجة|لخص لي كل|compare|research|multi[- ]?step|step[- ]by[- ]step|analyze|find the (root )?cause|verify (the |your )?result|plan and execute|across (all|multiple))/i;
+        let extendedHandoffDone = false;
+        let lastHandoffAt = 0;
+        const maybeRouteToExtended = (textIn: string) => {
+          if (extendedHandoffDone) return;
+          if (isExtendedModel(activeLiveModel)) return;
+          if (!COMPLEX_TASK_RE.test(textIn)) return;
+          if (Date.now() - lastHandoffAt < 15000) return;
+          extendedHandoffDone = true;
+          lastHandoffAt = Date.now();
+          console.log("[GEMINI LIVE] complexity router -> extended thinking handoff");
+          transparentHandoff(EXTENDED_THINKING_MODEL, "complex task detected");
+        };
+
+        // [MODEL HANDOFF SAFETY] Gemini Live needs a NEW session to change
+        // models. The handoff preserves the LOGICAL session: the client
+        // WebSocket stays open, recent turns are replayed into the new model,
+        // and the user experiences one continuous call. On rejection the
+        // failover chain below keeps the call alive.
+        const transparentHandoff = (newModel: string, why: string) => {
+          const previousModel = activeLiveModel;
+          try { session?.close?.(); } catch {}
+          connectLive(newModel, true)
+            .then((s: any) => {
+              session = s;
+              activeLiveModel = newModel;
+              console.log("[GEMINI LIVE] handoff complete:", previousModel, "->", newModel, "(" + why + ")");
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'live_ready', model: newModel, handoff: true }));
+              }
+              const ctx = buildContextReplay();
+              if (ctx && session) {
+                try {
+                  session.sendClientContent({
+                    turns: [{ role: 'user', parts: [{ text: '【سياق مكالمة جارية — استمر طبيعيًا وكأنك تعرفه بالفعل، دون تلخيصه أو التعليق عليه】\n' + ctx }] }],
+                    turnComplete: true
+                  });
+                } catch (e: any) { console.warn("[GEMINI LIVE] context replay notice:", e?.message || e); }
+              }
+            })
+            .catch((e: any) => console.warn("[GEMINI LIVE] handoff connect rejected — failover chain continues:", e?.message || e));
+        };
 
         const SETUP_TIMEOUT_MS = 12000; // abandon a silent/hung model after 12s
 
@@ -10386,9 +10473,10 @@ app.all("/api/*", (req, res) => {
           connectLive(FALLBACK_LIVE_MODEL, false)
             .then((s: any) => {
               session = s;
+              activeLiveModel = FALLBACK_LIVE_MODEL;
               console.log("[GEMINI LIVE] Fallback session started successfully");
               if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'live_ready' }));
+                ws.send(JSON.stringify({ type: 'live_ready', model: FALLBACK_LIVE_MODEL }));
               }
             })
             .catch((fbErr: any) => {
@@ -10398,6 +10486,30 @@ app.all("/api/*", (req, res) => {
                 ws.send(JSON.stringify({ type: 'error', message: 'فشل تهيئة الاتصال الصوتي المباشر: ' + (fbErr?.message || String(fbErr)) }));
               }
             });
+        };
+
+        // [3.8 CHAIN] extended-thinking -> default 3.8-live -> proven 2.5
+        // native. The old single-step chain is preserved for every other id.
+        let defaultLiveTried = false;
+        const handlePrimaryFailure = (failedModel: string, why: string) => {
+          if (isExtendedModel(failedModel) && !defaultLiveTried) {
+            defaultLiveTried = true;
+            console.warn("[GEMINI LIVE] extended model unavailable (" + why + ") — trying default 3.8 Live");
+            connectLive(DEFAULT_LIVE_MODEL, true)
+              .then((s: any) => {
+                session = s;
+                activeLiveModel = DEFAULT_LIVE_MODEL;
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'live_ready', model: DEFAULT_LIVE_MODEL }));
+                }
+              })
+              .catch((e: any) => {
+                console.warn("[GEMINI LIVE] default 3.8 Live also failed:", e?.message || e);
+                startFallback("default 3.8 Live failed: " + (e?.message || String(e)));
+              });
+            return;
+          }
+          startFallback(why);
         };
 
         // Connect to one Live model. isFailoverCandidate=true (the primary)
@@ -10419,7 +10531,7 @@ app.all("/api/*", (req, res) => {
               if (setupCompleted || switchedAway) return;
               switchedAway = true;
               try { resolvedSession?.close(); } catch (e) {}
-              startFallback('no setupComplete within ' + (SETUP_TIMEOUT_MS / 1000) + 's');
+              handlePrimaryFailure(modelName, 'no setupComplete within ' + (SETUP_TIMEOUT_MS / 1000) + 's');
             }, SETUP_TIMEOUT_MS);
           }
 
@@ -10436,15 +10548,29 @@ app.all("/api/*", (req, res) => {
               // sessions just relay a harmless text channel that was already
               // handled by the client.
               outputAudioTranscription: {},
+              // [GEMINI 3.8 LIVE UPGRADE] official transcript channels (the
+              // in-call Chat reads them), session resumption handles, media
+              // resolution per the Live API guidance, and the optional
+              // thinking level for the extended model only. Without the new
+              // query params the session behaves like the previous build.
+              inputAudioTranscription: {},
+              sessionResumption: resumeHandleParam ? { handle: resumeHandleParam } : {},
+              ...(isExtendedModel(modelName)
+                ? { mediaResolution: "MEDIA_RESOLUTION_MEDIUM" }
+                : { mediaResolution: "MEDIA_RESOLUTION_LOW" }),
+              ...(isExtendedModel(modelName) && thinkingLevelParam
+                ? { thinkingConfig: { thinkingLevel: thinkingLevelParam } }
+                : {}),
             },
             callbacks: {
               onmessage: (message: LiveServerMessage) => {
                 if ((message as any).setupComplete) {
                   setupCompleted = true;
+                  activeLiveModel = modelName;
                   clearWatchdog();
                   console.log("[GEMINI LIVE] Setup complete from callback:", modelName);
                   if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'live_ready' }));
+                    ws.send(JSON.stringify({ type: 'live_ready', model: activeLiveModel }));
                   }
                 }
 
@@ -10480,6 +10606,25 @@ app.all("/api/*", (req, res) => {
                       }
                    }
 
+                   // [GEMINI 3.8 LIVE UPGRADE] official transcript channels +
+                   // interaction lifecycle + resumption handles.
+                   const inTr = message.serverContent.inputTranscription;
+                   if (inTr && inTr.text && ws.readyState === WebSocket.OPEN) {
+                     ws.send(JSON.stringify({ type: 'input_transcription', text: inTr.text }));
+                     pushRecentTurn('user', inTr.text);
+                   }
+                   const outTr = message.serverContent.outputTranscription;
+                   if (outTr && outTr.text && ws.readyState === WebSocket.OPEN) {
+                     ws.send(JSON.stringify({ type: 'output_transcription', text: outTr.text }));
+                   }
+                   const iStat = (message.serverContent as any).interactionStatus;
+                   if (iStat && ws.readyState === WebSocket.OPEN) {
+                     ws.send(JSON.stringify({ type: 'interaction_status', status: String(iStat) }));
+                   }
+                   const rsu = (message.serverContent as any).sessionResumptionUpdate;
+                   if (rsu && rsu.newHandle && ws.readyState === WebSocket.OPEN) {
+                     ws.send(JSON.stringify({ type: 'resumption_handle', handle: String(rsu.newHandle) }));
+                   }
                    if (message.serverContent.interrupted && ws.readyState === WebSocket.OPEN) {
                       ws.send(JSON.stringify({ type: 'interrupted' }));
                    }
@@ -10497,7 +10642,7 @@ app.all("/api/*", (req, res) => {
                 // fail over transparently instead of killing the user's call.
                 if (isFailoverCandidate && !setupCompleted) {
                   switchedAway = true;
-                  startFallback('closed before setup complete');
+                  handlePrimaryFailure(modelName, 'closed before setup complete');
                   return;
                 }
                 if (guestUsageInterval) clearInterval(guestUsageInterval);
@@ -10510,7 +10655,7 @@ app.all("/api/*", (req, res) => {
                   switchedAway = true;
                   clearWatchdog();
                   try { resolvedSession?.close(); } catch (e) {}
-                  startFallback('connection error: ' + (err?.message || String(err)));
+                  handlePrimaryFailure(modelName, 'connection error: ' + (err?.message || String(err)));
                   return;
                 }
                 if (guestUsageInterval) clearInterval(guestUsageInterval);
@@ -10540,7 +10685,7 @@ app.all("/api/*", (req, res) => {
         session = await connectLive(targetModel, targetModel !== FALLBACK_LIVE_MODEL);
         console.log("[GEMINI LIVE] Session started successfully");
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'live_ready' }));
+          ws.send(JSON.stringify({ type: 'live_ready', model: activeLiveModel }));
         }
 
         // [STUDY TOOLS] Lesson kickoff: with a studyTopic the tutor OPENS the
@@ -10570,6 +10715,35 @@ app.all("/api/*", (req, res) => {
               }
               ws.close();
               return;
+          }
+          // [GEMINI 3.8 LIVE UPGRADE] typed chat text + visual frames feed
+          // the SAME Live session (one logical Agent — no separate chat or
+          // visual path). hidden:true = context plumbing, never surfaced.
+          if (msg.type === "text" && msg.text && session) {
+            const textIn = String(msg.text).slice(0, 4000);
+            try {
+              await session.sendClientContent({
+                turns: [{ role: 'user', parts: [{ text: textIn }] }],
+                turnComplete: true
+              });
+            } catch (e: any) {
+              console.warn("[GEMINI LIVE] chat text notice:", e?.message || e);
+            }
+            if (!msg.hidden) {
+              pushRecentTurn('user', textIn);
+              maybeRouteToExtended(textIn);
+            }
+            return;
+          }
+          if (msg.type === "image" && msg.data && session) {
+            const imgData = String(msg.data);
+            try {
+              await session.sendRealtimeInput({ media: { mimeType: msg.mimeType || "image/jpeg", data: imgData } });
+            } catch (e: any) {
+              try { await session.sendRealtimeInput({ video: { mimeType: msg.mimeType || "image/jpeg", data: imgData } }); }
+              catch (e2: any) { console.warn("[GEMINI LIVE] visual frame notice:", e2?.message || e2); }
+            }
+            return;
           }
           const audioChunk = msg.audio || msg.data;
           if (audioChunk && session) {

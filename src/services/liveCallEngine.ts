@@ -147,6 +147,7 @@ export class LiveCallEngine {
     micFrames: 0, sent: 0, sentBytes: 0, sendFails: 0, blockedFrames: 0,
     silentFrames: 0, gateFrames: 0, tailFrames: 0,
     received: 0, playedChunks: 0, underruns: 0, interrupts: 0, fallbacks: 0,
+    reconnects: 0, imagesSent: 0,
     lastSendAgoMs: 0, lastSendAt: 0
   };
 
@@ -210,6 +211,26 @@ export class LiveCallEngine {
         this.cb.onMessage(msg);
       };
     });
+  }
+
+  /**
+   * [RECONNECT — Task 42] Re-open the transport after a WebSocket drop
+   * WITHOUT touching the logical conversation: the mic stream and playback
+   * graph stay alive, the generation bump rejects every stale callback from
+   * the dead socket, and capture is re-bound to the new generation on the
+   * SAME MediaStream (never a new getUserMedia — no duplicate pipelines and
+   * no permission re-prompt).
+   */
+  public async reconnect(url: string): Promise<void> {
+    if (!this.micStream) throw new Error('no-mic-stream');
+    this.stats.reconnects++;
+    await this.connect(url);
+    this.captureStartedForGen = this.gen;
+    try {
+      await this.buildCaptureGraph(this.gen, this.usingNativeFallback);
+    } catch {
+      try { await this.buildCaptureGraph(this.gen, true); } catch {}
+    }
   }
 
   public sendRaw(obj: any): boolean {

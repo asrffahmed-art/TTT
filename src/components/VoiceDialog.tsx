@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Mic, MicOff, PhoneOff, Loader2, Volume2, Check, ChevronDown, RefreshCw, Play, Clock, Lock, LogIn, Sparkles, AlertCircle, GraduationCap, ScrollText
+  Mic, MicOff, PhoneOff, Loader2, Volume2, Check, ChevronDown, RefreshCw, Play, Clock, Lock, LogIn, Sparkles, AlertCircle, GraduationCap, ScrollText, MessageSquare, MonitorUp, Video, X, Brain, Send
 } from 'lucide-react';
 import { useLanguage } from '../lib/LanguageContext';
 import { getDeviceId } from '../lib/otpService';
 import { liveWsUrl } from '../services/wsUrl';
 import { LiveCallEngine } from '../services/liveCallEngine';
+import { VisualInputManager, VisualSourceState } from '../services/visualInputManager';
 
 export interface VoiceOption {
   id: string;
@@ -50,6 +51,28 @@ export function VoiceDialog({
   const autoCloseRef = useRef(false);
   const autoCloseTimerRef = useRef<any>(null);
   const notebookRef = useRef<HTMLDivElement | null>(null);
+
+  // ─── [MULTIMODAL LIVE — Task 42] Chat + Screen + Camera + Extended Thinking
+  // One logical Agent: the SAME Live session and the SAME conversation state
+  // (`transcripts`) feed voice, typed chat and visual frames. Additive only.
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [screenState, setScreenState] = useState<VisualSourceState>('off');
+  const [cameraState, setCameraState] = useState<VisualSourceState>('off');
+  const [extendedThinking, setExtendedThinking] = useState(false);
+  const [interactionBusy, setInteractionBusy] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const vimRef = useRef<VisualInputManager | null>(null);
+  const resumptionHandleRef = useRef<string>('');
+  const reconnectAttemptsRef = useRef(0);
+  const pendingContextReplayRef = useRef(false);
+  const lastUserPieceAtRef = useRef(0);
+  const transcriptsRef = useRef<{role: 'user'|'model', text: string}[]>([]);
+  const extendedThinkingRef = useRef(false);
+  useEffect(() => { transcriptsRef.current = transcripts; }, [transcripts]);
 
   const doAutoClose = () => {
     if (!autoCloseRef.current) return;
@@ -103,13 +126,27 @@ export function VoiceDialog({
   const guestTimerRef = useRef<any>(null);
   const sessionAccumulatedSecRef = useRef<number>(0);
 
-  const stopSession = () => {
+  const stopSession = (keepMedia = false) => {
     isSessionActiveRef.current = false;
     // Engine.stop() sends {type:'stop'}, closes the socket, tears down the mic
     // and playback graphs, and suspends the output context — silence is
     // guaranteed the moment the call ends.
     if (engineRef.current) {
       try { engineRef.current.stop(true); } catch (e) {}
+    }
+    // [MULTIMODAL LIVE] full resource cleanup — no orphan camera/screen
+    // tracks, no hidden capture, no stale reconnect state. Media survives
+    // ONLY a same-dialog voice-change restart (keepMedia).
+    if (!keepMedia) {
+      try { vimRef.current?.stopAll(); } catch (e) {}
+      vimRef.current = null;
+      setScreenState('off');
+      setCameraState('off');
+      setInteractionBusy(false);
+      setReconnecting(false);
+      reconnectAttemptsRef.current = 0;
+      pendingContextReplayRef.current = false;
+      resumptionHandleRef.current = '';
     }
     setVoiceState('initial');
   };
@@ -197,6 +234,19 @@ export function VoiceDialog({
       // Idempotent: the server may send this more than once
       if (!isSessionActiveRef.current) return;
       setVoiceState('listening');
+      setReconnecting(false);
+      reconnectAttemptsRef.current = 0;
+      // [RECONNECT / HANDOFF] replay recent turns so the model continues the
+      // SAME logical conversation on its new Live session.
+      if (pendingContextReplayRef.current) {
+        pendingContextReplayRef.current = false;
+        try {
+          const replay = transcriptsRef.current.slice(-6)
+            .map(t => (t.role === 'user' ? 'المستخدم: ' : 'أنت: ') + t.text)
+            .join('\n').slice(-2500);
+          if (replay) engineRef.current?.sendRaw({ type: 'text', text: '【سياق المكالمة بعد إعادة الاتصال أو تبديل النموذج — استمر طبيعيًا دون تعليق عليه】\n' + replay, hidden: true });
+        } catch {}
+      }
       const engine = engineRef.current;
       if (engine) {
         engine.startCapture()
@@ -207,6 +257,33 @@ export function VoiceDialog({
             setVoiceState('error');
           });
       }
+    } else if (msg.type === 'input_transcription' && msg.text) {
+      // [MULTIMODAL LIVE] user's voice lands in the SAME conversation state
+      // the Chat layer renders — no second history.
+      setTranscripts(prev => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === 'user' && Date.now() - lastUserPieceAtRef.current < 5000) {
+          const arr = [...prev];
+          arr[arr.length - 1] = { role: 'user', text: (last.text + ' ' + msg.text).trim() };
+          return arr;
+        }
+        return [...prev, { role: 'user', text: msg.text }];
+      });
+      lastUserPieceAtRef.current = Date.now();
+    } else if (msg.type === 'output_transcription') {
+      // Model speech is already transcribed through the modelTurn 'text'
+      // channel on this stack; the official output channel stays ignored here
+      // to avoid double-rendering (the server still exposes it).
+    } else if (msg.type === 'turn_complete') {
+      lastUserPieceAtRef.current = 0; // next voice piece opens a fresh user turn
+    } else if (msg.type === 'interaction_status' && msg.status) {
+      // [EXTENDED THINKING LIFECYCLE] turnComplete is NOT completion: the
+      // agent may keep reasoning/running tools after it. Only IDLE ends work.
+      setInteractionBusy(String(msg.status) !== 'IDLE');
+    } else if (msg.type === 'resumption_handle' && msg.handle) {
+      resumptionHandleRef.current = String(msg.handle);
+    } else if (msg.type === 'user_text') {
+      // typed text was appended optimistically at send time — ignore echo
     } else if (msg.type === 'interrupted') {
       engineRef.current?.stopPlayback();
       setVoiceState('listening');
@@ -240,7 +317,13 @@ export function VoiceDialog({
       setVoiceState('error');
     } else if (msg.type === 'ws_closed') {
       if (isSessionActiveRef.current) {
-        stopSession();
+        // [RECONNECT] a transient WebSocket drop must not destroy the logical
+        // conversation: resume with the last known session handle first.
+        if (reconnectAttemptsRef.current < 2) {
+          attemptReconnect();
+        } else {
+          stopSession();
+        }
       }
     }
   };
@@ -293,6 +376,24 @@ export function VoiceDialog({
     };
   }, []);
 
+  // [MULTIMODAL LIVE] bind preview elements to the live capture streams
+  useEffect(() => {
+    const v = screenVideoRef.current;
+    if (v) { try { v.srcObject = (screenState === 'active' ? vimRef.current?.getStream('screen') : null) || null; } catch {} }
+  }, [screenState]);
+
+  useEffect(() => {
+    const v = cameraVideoRef.current;
+    if (v) { try { v.srcObject = (cameraState === 'active' ? vimRef.current?.getStream('camera') : null) || null; } catch {} }
+  }, [cameraState]);
+
+  // Chat auto-scroll — never blocks the audio pipeline (simple DOM scroll)
+  useEffect(() => {
+    if (chatOpen && chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [transcripts, chatOpen]);
+
   const changeVoice = (voice: VoiceOption) => {
     setSelectedVoice(voice);
     setShowVoiceMenu(false);
@@ -325,7 +426,7 @@ export function VoiceDialog({
 
   const startConversation = async (voiceId: string = selectedVoice.id) => {
     setErrorMessage(null);
-    stopSession();
+    stopSession(true); // keep media sources alive across voice-change restarts
     // [MOBILE UNLOCK] best-effort pre-warm of both audio contexts while the
     // user's tap activation may still be valid (speaker + 16 kHz mic graph).
     try { getEngine().unlockAudio(); } catch {}
@@ -335,7 +436,7 @@ export function VoiceDialog({
     try {
       const userId = localStorage.getItem('app-user-id') || localStorage.getItem('thoth_user_id') || '';
       const deviceId = getDeviceId();
-      const wsUrl = liveWsUrl(`/api/live-audio?voice=${encodeURIComponent(voiceId)}&userId=${encodeURIComponent(userId)}&deviceId=${encodeURIComponent(deviceId)}${teachTopic ? `&studyTopic=${encodeURIComponent(teachTopic)}` : ''}`);
+      const wsUrl = buildLiveUrl(voiceId);
       const engine = getEngine();
       engine.setMuted(isMutedRef.current);
       await engine.connect(wsUrl);
@@ -351,6 +452,96 @@ export function VoiceDialog({
 
 
   
+  // ─── [MULTIMODAL LIVE] helpers ──────────────────────────────────────────
+
+  const buildLiveUrl = (voiceId: string, opts?: { thinking?: boolean; resume?: boolean }) => {
+    const userId = localStorage.getItem('app-user-id') || localStorage.getItem('thoth_user_id') || '';
+    const deviceId = getDeviceId();
+    const thinkingOn = opts?.thinking ?? extendedThinkingRef.current;
+    const resume = (opts?.resume && resumptionHandleRef.current)
+      ? `&resumeHandle=${encodeURIComponent(resumptionHandleRef.current)}` : '';
+    return liveWsUrl(`/api/live-audio?voice=${encodeURIComponent(voiceId)}&userId=${encodeURIComponent(userId)}&deviceId=${encodeURIComponent(deviceId)}${teachTopic ? `&studyTopic=${encodeURIComponent(teachTopic)}` : ''}${thinkingOn ? '&thinking=1&thinkingLevel=high' : ''}${resume}`);
+  };
+
+  // [RECONNECT] transparent resume — same conversation, same mic, no repaint
+  // of the dialog; context is replayed once the resumed session is ready.
+  const attemptReconnect = () => {
+    const engine = engineRef.current;
+    if (!engine) { stopSession(); return; }
+    reconnectAttemptsRef.current++;
+    setReconnecting(true);
+    pendingContextReplayRef.current = true;
+    engine.reconnect(buildLiveUrl(selectedVoice.id, { resume: true }))
+      .then(() => { /* live_ready completes the flow */ })
+      .catch(() => {
+        if (reconnectAttemptsRef.current < 2 && isSessionActiveRef.current) {
+          setTimeout(() => { if (isSessionActiveRef.current) attemptReconnect(); }, 1500);
+        } else {
+          setReconnecting(false);
+          stopSession();
+          setVoiceState('error');
+        }
+      });
+  };
+
+  const sendChatMessage = () => {
+    const text = chatInput.trim();
+    if (!text || !isSessionActiveRef.current) return;
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (!engine.sendRaw({ type: 'text', text })) return;
+    setTranscripts(prev => [...prev, { role: 'user', text }]);
+    setChatInput('');
+    setInteractionBusy(true);
+  };
+
+  const ensureVim = (): VisualInputManager => {
+    if (!vimRef.current) {
+      vimRef.current = new VisualInputManager({
+        onFrame: (b64) => {
+          const eng = engineRef.current;
+          if (!eng || !isSessionActiveRef.current) return;
+          if (eng.sendRaw({ type: 'image', mimeType: 'image/jpeg', data: b64 })) {
+            try { eng.stats.imagesSent++; } catch {}
+          }
+        },
+        onSourceChange: (source, state) => {
+          if (source === 'screen') setScreenState(state); else setCameraState(state);
+        }
+      });
+    }
+    return vimRef.current;
+  };
+
+  const toggleScreenShare = () => {
+    if (voiceState === 'initial' || voiceState === 'error') return;
+    ensureVim().toggleScreen().catch(() => {});
+  };
+
+  const toggleCamera = () => {
+    if (voiceState === 'initial' || voiceState === 'error') return;
+    ensureVim().toggleCamera().catch(() => {});
+  };
+
+  // [MODEL HANDOFF SAFETY] user-controlled extended thinking: transparent
+  // reconnect to the extended model — mic, media and the conversation all
+  // survive; context is replayed on live_ready (one THOTH session).
+  const toggleExtendedThinking = () => {
+    const next = !extendedThinkingRef.current;
+    extendedThinkingRef.current = next;
+    setExtendedThinking(next);
+    if (!isSessionActiveRef.current) return;
+    setReconnecting(true);
+    pendingContextReplayRef.current = true;
+    engineRef.current?.reconnect(buildLiveUrl(selectedVoice.id, { thinking: next }))
+      .then(() => { /* live_ready completes the flow */ })
+      .catch(() => {
+        extendedThinkingRef.current = !next;
+        setExtendedThinking(!next);
+        setReconnecting(false);
+      });
+  };
+
   const handleClose = () => {
     stopSession();
     
@@ -403,6 +594,25 @@ export function VoiceDialog({
               </span>
             )}
           </div>
+        </div>
+        {/* [MULTIMODAL LIVE] compact status cluster — additive */}
+        <div className="flex items-center gap-2 shrink-0">
+          {reconnecting && (
+            <span className="text-[10px] font-black text-amber-300 bg-amber-500/15 border border-amber-500/30 px-2 py-1 rounded-full flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              {isAr ? 'إعادة اتصال...' : 'Reconnecting...'}
+            </span>
+          )}
+          {interactionBusy && !reconnecting && (
+            <span className="text-[10px] font-black text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-1 rounded-full animate-pulse">
+              {isAr ? 'بيشتغل...' : 'Working...'}
+            </span>
+          )}
+          {extendedThinking && (
+            <span className="text-[10px] font-black text-purple-300 bg-purple-500/15 border border-purple-500/30 px-2 py-1 rounded-full">
+              🧠 {isAr ? 'تفكير موسّع' : 'Extended'}
+            </span>
+          )}
         </div>
       </header>
 
@@ -551,9 +761,139 @@ export function VoiceDialog({
         </div>
       )}
 
+      {/* [MULTIMODAL LIVE] media previews — screen / camera */}
+      {(screenState === 'active' || cameraState === 'active') && (
+        <div className="w-full px-4 pb-2 relative z-10 flex items-end justify-center gap-3 flex-wrap">
+          {screenState === 'active' && (
+            <div className="relative w-44 rounded-xl overflow-hidden border border-emerald-500/30 bg-black/40 shadow-lg">
+              <video ref={screenVideoRef} autoPlay muted playsInline className="w-full h-24 object-cover" />
+              <span className="absolute top-1 start-1 text-[9px] font-black text-emerald-300 bg-black/60 px-1.5 py-0.5 rounded">{isAr ? 'شاشة' : 'Screen'}</span>
+              <button onClick={toggleScreenShare} className="absolute top-1 end-1 w-5 h-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center" title={isAr ? 'إيقاف مشاركة الشاشة' : 'Stop screen sharing'}>
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+          {cameraState === 'active' && (
+            <div className="relative w-44 rounded-xl overflow-hidden border border-emerald-500/30 bg-black/40 shadow-lg">
+              <video ref={cameraVideoRef} autoPlay muted playsInline className="w-full h-24 object-cover" />
+              <span className="absolute top-1 start-1 text-[9px] font-black text-emerald-300 bg-black/60 px-1.5 py-0.5 rounded">{isAr ? 'كاميرا' : 'Camera'}</span>
+              <button onClick={toggleCamera} className="absolute top-1 end-1 w-5 h-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center" title={isAr ? 'إيقاف الكاميرا' : 'Stop camera'}>
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* [MULTIMODAL LIVE] Chat layer — the SAME conversation, additive UI */}
+      {chatOpen && (
+        <div className="w-full px-4 pb-2 relative z-10">
+          <div className="max-w-xl mx-auto bg-white/[0.04] border border-indigo-500/20 rounded-2xl overflow-hidden backdrop-blur-md">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-indigo-500/15 bg-indigo-500/[0.06]">
+              <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="text-[11px] font-black text-indigo-200">{isAr ? 'المحادثة النصية' : 'Live chat'}</span>
+              {interactionBusy && (
+                <span className="text-[9px] font-black text-indigo-300/80 animate-pulse">{isAr ? 'بيفكر / بيشتغل...' : 'working...'}</span>
+              )}
+              <button
+                onClick={toggleExtendedThinking}
+                className={`ms-auto text-[9px] font-black px-2 py-1 rounded-full border transition-all flex items-center gap-1 ${
+                  extendedThinking
+                    ? 'text-purple-200 bg-purple-500/20 border-purple-500/40'
+                    : 'text-white/50 bg-white/5 border-white/10 hover:text-white/80'
+                }`}
+                title={isAr ? 'نموذج التفكير الموسّع للمهام المعقدة' : 'Extended-thinking model for complex tasks'}
+              >
+                <Brain className="w-3 h-3" />
+                {isAr ? 'تفكير موسّع' : 'Extended'}
+              </button>
+              <button onClick={() => setChatOpen(false)} className="w-6 h-6 rounded-full bg-white/5 hover:bg-white/10 text-white/60 flex items-center justify-center" title={isAr ? 'إغلاق المحادثة' : 'Close chat'}>
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div ref={chatScrollRef} className="max-h-52 overflow-y-auto px-4 py-3 space-y-2 hide-scrollbar" dir={isAr ? 'rtl' : 'ltr'}>
+              {transcripts.filter(t => t.text && t.text.trim()).length === 0 ? (
+                <p className="text-[11px] text-white/35 text-center py-3">
+                  {isAr ? 'اكتب رسالة أو اتكلم عادي — كل حاجة هتظهر هنا 💬' : 'Type a message or just speak — everything shows here 💬'}
+                </p>
+              ) : (
+                transcripts.filter(t => t.text && t.text.trim()).map((t, i) => (
+                  t.role === 'user' ? (
+                    <div key={i} className="flex justify-end" dir={isAr ? 'rtl' : 'ltr'}>
+                      <p className="max-w-[85%] text-[11px] leading-relaxed text-indigo-100 bg-indigo-500/15 border border-indigo-500/25 rounded-xl px-3 py-1.5">
+                        <span className="font-bold text-indigo-300">{isAr ? 'أنت: ' : 'You: '}</span>{t.text}
+                      </p>
+                    </div>
+                  ) : (
+                    <p key={i} className="text-[11px] leading-relaxed text-white/85" dir={isAr ? 'rtl' : 'ltr'}>
+                      <span className="text-indigo-400 font-bold">THOTH: </span>{t.text}
+                    </p>
+                  )
+                ))
+              )}
+            </div>
+            <div className="flex items-center gap-2 px-3 py-2 border-t border-indigo-500/10">
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') sendChatMessage(); }}
+                placeholder={isAr ? 'اكتب لـ THOTH...' : 'Type to THOTH...'}
+                className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-xs text-white placeholder-white/30 outline-none focus:border-indigo-500/40"
+              />
+              <button
+                onClick={sendChatMessage}
+                disabled={!chatInput.trim() || voiceState !== 'listening' && voiceState !== 'speaking'}
+                className="w-9 h-9 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 disabled:opacity-40 text-white flex items-center justify-center shrink-0 active:scale-95 transition-all"
+                title={isAr ? 'إرسال' : 'Send'}
+              >
+                <Send className={`w-4 h-4 ${isAr ? '-scale-x-100' : ''}`} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Footer Controls */}
       <footer className="w-full py-8 px-6 flex items-center justify-center gap-6 relative z-20">
         
+        {/* [MULTIMODAL LIVE] Chat / Screen / Camera — compact additive controls */}
+        <button
+          onClick={() => setChatOpen(v => !v)}
+          disabled={voiceState === 'connecting' || voiceState === 'error' || voiceState === 'initial'}
+          className={`w-12 h-12 rounded-full flex items-center justify-center border transition-all active:scale-95 ${
+            chatOpen
+              ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+              : 'bg-white/5 hover:bg-white/10 border-white/10 text-white'
+          }`}
+          title={isAr ? 'المحادثة النصية' : 'Chat'}
+        >
+          <MessageSquare className="w-5 h-5" />
+        </button>
+        <button
+          onClick={toggleScreenShare}
+          disabled={voiceState === 'connecting' || voiceState === 'error' || voiceState === 'initial'}
+          className={`w-12 h-12 rounded-full flex items-center justify-center border transition-all active:scale-95 ${
+            screenState === 'active'
+              ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+              : 'bg-white/5 hover:bg-white/10 border-white/10 text-white'
+          }`}
+          title={isAr ? 'مشاركة الشاشة' : 'Share screen'}
+        >
+          <MonitorUp className="w-5 h-5" />
+        </button>
+        <button
+          onClick={toggleCamera}
+          disabled={voiceState === 'connecting' || voiceState === 'error' || voiceState === 'initial'}
+          className={`w-12 h-12 rounded-full flex items-center justify-center border transition-all active:scale-95 ${
+            cameraState === 'active'
+              ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+              : 'bg-white/5 hover:bg-white/10 border-white/10 text-white'
+          }`}
+          title={isAr ? 'الكاميرا' : 'Camera'}
+        >
+          <Video className="w-5 h-5" />
+        </button>
+
         {/* Mute Toggle */}
         <button
           onClick={toggleMute}
