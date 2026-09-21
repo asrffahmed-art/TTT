@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Mic, MicOff, PhoneOff, Loader2, Volume2, Check, ChevronDown, RefreshCw, Play, Clock, Lock, LogIn, Sparkles, AlertCircle, GraduationCap, ScrollText, MessageSquare, MonitorUp, Video, X, Brain, Send
+  Mic, MicOff, PhoneOff, Loader2, Volume2, Check, ChevronDown, RefreshCw, Play, Clock, Lock, LogIn, Sparkles, AlertCircle, GraduationCap, ScrollText, MessageSquare, MonitorUp, Video, X, Brain, Send, SwitchCamera
 } from 'lucide-react';
 import { useLanguage } from '../lib/LanguageContext';
 import { getDeviceId } from '../lib/otpService';
@@ -77,6 +77,25 @@ export function VoiceDialog({
   const extendedThinkingRef = useRef(false);
   useEffect(() => { transcriptsRef.current = transcripts; }, [transcripts]);
 
+  // ── [ONE CONVERSATION — Task 43] live turns -> MAIN chat thread ──────
+  // Voice + typed turns are ONE conversation: every finalized turn is
+  // mirrored into the active main-chat session through `thoth_live_turn`
+  // (Chat.tsx appends + persists via its normal path — guests keep their
+  // zero-server-storage rule because saveMessageToFirestore early-returns).
+  const pendingUserTurnRef = useRef('');
+  const pendingModelTurnRef = useRef('');
+  const dispatchLiveTurn = (role: 'user' | 'model', text: string) => {
+    const t = (text || '').trim();
+    if (!t) return;
+    try {
+      window.dispatchEvent(new CustomEvent('thoth_live_turn', { detail: { role, text: t } }));
+    } catch {}
+  };
+  const flushLiveTurns = () => {
+    if (pendingUserTurnRef.current) { dispatchLiveTurn('user', pendingUserTurnRef.current); pendingUserTurnRef.current = ''; }
+    if (pendingModelTurnRef.current) { dispatchLiveTurn('model', pendingModelTurnRef.current); pendingModelTurnRef.current = ''; }
+  };
+
   const doAutoClose = () => {
     if (!autoCloseRef.current) return;
     autoCloseRef.current = false;
@@ -131,6 +150,9 @@ export function VoiceDialog({
 
   const stopSession = (keepMedia = false) => {
     isSessionActiveRef.current = false;
+    // [ONE CONVERSATION] a call that ends without a final turn_complete must
+    // not lose its last turn in the main thread.
+    if (!keepMedia) { try { flushLiveTurns(); } catch {} }
     // Engine.stop() sends {type:'stop'}, closes the socket, tears down the mic
     // and playback graphs, and suspends the output context — silence is
     // guaranteed the moment the call ends.
@@ -263,6 +285,13 @@ export function VoiceDialog({
           });
       }
     } else if (msg.type === 'input_transcription' && msg.text) {
+      // [ONE CONVERSATION] merge into the pending mirror turn (5s window,
+      // same semantics as the panel); a stale pending turn is flushed first.
+      if (pendingUserTurnRef.current && Date.now() - lastUserPieceAtRef.current >= 5000) {
+        dispatchLiveTurn('user', pendingUserTurnRef.current);
+        pendingUserTurnRef.current = '';
+      }
+      pendingUserTurnRef.current = (pendingUserTurnRef.current + ' ' + msg.text).trim();
       // [MULTIMODAL LIVE] user's voice lands in the SAME conversation state
       // the Chat layer renders — no second history.
       setTranscripts(prev => {
@@ -276,6 +305,12 @@ export function VoiceDialog({
       });
       lastUserPieceAtRef.current = Date.now();
     } else if (msg.type === 'output_transcription' && msg.text) {
+      // [ONE CONVERSATION] model speech joins the same pending mirror turn.
+      if (pendingModelTurnRef.current && Date.now() - lastModelPieceAtRef.current >= 5000) {
+        dispatchLiveTurn('model', pendingModelTurnRef.current);
+        pendingModelTurnRef.current = '';
+      }
+      pendingModelTurnRef.current = (pendingModelTurnRef.current + ' ' + msg.text).trim();
       // [3.8 LIVE] native-audio models transcribe their speech ONLY through
       // this channel (modelTurn carries no text parts) — THOTH's voice lands
       // in the SAME conversation the Chat layer renders.
@@ -290,6 +325,7 @@ export function VoiceDialog({
       });
       lastModelPieceAtRef.current = Date.now();
     } else if (msg.type === 'turn_complete') {
+      flushLiveTurns(); // [ONE CONVERSATION] finalized turns -> main chat
       lastUserPieceAtRef.current = 0; // next voice piece opens a fresh user turn
       lastModelPieceAtRef.current = 0;
     } else if (msg.type === 'interaction_status' && msg.status) {
@@ -310,6 +346,7 @@ export function VoiceDialog({
       if (engineRef.current?.isOutputSuspended()) setNeedUserGesture(true);
       setVoiceState('speaking');
     } else if (msg.type === 'text' && msg.text) {
+      pendingModelTurnRef.current = (pendingModelTurnRef.current + msg.text).trim();
       setTranscripts(prev => {
         const last = prev[prev.length - 1];
         if (last && last.role === 'model') {
@@ -401,7 +438,7 @@ export function VoiceDialog({
   useEffect(() => {
     const v = cameraVideoRef.current;
     if (v) { try { v.srcObject = (cameraState === 'active' ? vimRef.current?.getStream('camera') : null) || null; } catch {} }
-  }, [cameraState]);
+  }, [cameraState, chatOpen]);
 
   // Chat auto-scroll — never blocks the audio pipeline (simple DOM scroll)
   useEffect(() => {
@@ -506,6 +543,7 @@ export function VoiceDialog({
     const engine = engineRef.current;
     if (!engine) return;
     if (!engine.sendRaw({ type: 'text', text })) return;
+    pendingUserTurnRef.current = (pendingUserTurnRef.current + ' ' + text).trim();
     setTranscripts(prev => [...prev, { role: 'user', text }]);
     setChatInput('');
     setInteractionBusy(true);
@@ -543,6 +581,21 @@ export function VoiceDialog({
   const toggleCamera = () => {
     if (voiceState === 'initial' || voiceState === 'error') return;
     ensureVim().toggleCamera().catch(() => {});
+  };
+
+  // [TASK 43] one-tap front/back flip — the stream is swapped inside the
+  // VisualInputManager, the preview element is rebound here immediately.
+  const flipCamera = async () => {
+    const vim = vimRef.current;
+    if (!vim || cameraState !== 'active') return;
+    const ok = await vim.flipCamera();
+    if (ok) {
+      try { if (cameraVideoRef.current) cameraVideoRef.current.srcObject = vim.getStream('camera') || null; } catch {}
+    } else {
+      setMediaHint('camera-flip-unavailable');
+      if (mediaHintTimerRef.current) clearTimeout(mediaHintTimerRef.current);
+      mediaHintTimerRef.current = setTimeout(() => setMediaHint(''), 4500);
+    }
   };
 
   // [MODEL HANDOFF SAFETY] user-controlled extended thinking: transparent
@@ -673,6 +726,103 @@ export function VoiceDialog({
           </button>
         )}
 
+        {/* [TASK 43 — ONE CONVERSATION] full-height in-call chat. Same state,
+            same Agent — and every turn is mirrored into the main chat thread. */}
+        {chatOpen && (
+          <div className="flex-1 flex flex-col w-full max-w-2xl mx-auto min-h-0 mt-1 mb-2">
+            <div className="flex items-center gap-2 pb-1 shrink-0">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <MessageSquare className="w-4 h-4 text-indigo-400 shrink-0" />
+              <span className="text-xs font-black text-indigo-200 truncate">
+                {isAr ? 'نفس المحادثة — صوت ونص مع بعض' : 'One conversation — voice & text'}
+              </span>
+              {interactionBusy && (
+                <span className="text-[9px] font-black text-indigo-300/80 animate-pulse shrink-0">{isAr ? 'بيفكر...' : 'thinking...'}</span>
+              )}
+              <button
+                onClick={toggleExtendedThinking}
+                className={`ms-auto text-[9px] font-black px-2 py-1 rounded-full border transition-all flex items-center gap-1 shrink-0 ${
+                  extendedThinking
+                    ? 'text-purple-200 bg-purple-500/20 border-purple-500/40'
+                    : 'text-white/50 bg-white/5 border-white/10 hover:text-white/80'
+                }`}
+                title={isAr ? 'نموذج التفكير الموسّع للمهام المعقدة' : 'Extended-thinking model for complex tasks'}
+              >
+                <Brain className="w-3 h-3" />
+                {isAr ? 'تفكير موسّع' : 'Extended'}
+              </button>
+              <button onClick={() => setChatOpen(false)} className="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-white/60 flex items-center justify-center shrink-0" title={isAr ? 'إغلاق المحادثة' : 'Close chat'}>
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <p className="text-[10px] text-white/35 pb-2 shrink-0">
+              {isAr ? 'الكلام الصوتي والرسائل المكتوبة هنا بيوصلوا تلقائيًا لمحادثتك الرئيسية 💬' : 'Everything spoken or typed here lands in your main chat thread 💬'}
+            </p>
+            <div ref={chatScrollRef} className="flex-1 min-h-0 overflow-y-auto px-1 py-2 space-y-2.5 hide-scrollbar" dir={isAr ? 'rtl' : 'ltr'}>
+              {transcripts.filter(t => t.text && t.text.trim()).length === 0 ? (
+                <p className="text-xs text-white/35 text-center py-6">
+                  {isAr ? 'اكتب رسالة أو اتكلم عادي — كل حاجة هتظهر هنا 💬' : 'Type a message or just speak — everything shows here 💬'}
+                </p>
+              ) : (
+                transcripts.filter(t => t.text && t.text.trim()).map((t, i) => (
+                  t.role === 'user' ? (
+                    <div key={i} className="flex justify-end" dir={isAr ? 'rtl' : 'ltr'}>
+                      <p className="max-w-[85%] text-[13px] leading-relaxed text-indigo-50 bg-indigo-500/20 border border-indigo-500/30 rounded-2xl px-4 py-2">
+                        {t.text}
+                      </p>
+                    </div>
+                  ) : (
+                    <div key={i} className="flex justify-start" dir={isAr ? 'rtl' : 'ltr'}>
+                      <p className="max-w-[85%] text-[13px] leading-relaxed text-white/90 bg-white/[0.06] border border-white/10 rounded-2xl px-4 py-2 whitespace-pre-wrap">
+                        {t.text}
+                      </p>
+                    </div>
+                  )
+                ))
+              )}
+            </div>
+            <div className="flex items-center gap-2 pt-2 shrink-0" dir={isAr ? 'rtl' : 'ltr'}>
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') sendChatMessage(); }}
+                placeholder={isAr ? 'اكتب لـ THOTH...' : 'Type to THOTH...'}
+                className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder-white/30 outline-none focus:border-indigo-500/40"
+              />
+              <button
+                onClick={sendChatMessage}
+                disabled={!chatInput.trim() || voiceState !== 'listening' && voiceState !== 'speaking'}
+                className="w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 disabled:opacity-40 text-white flex items-center justify-center shrink-0 active:scale-95 transition-all"
+                title={isAr ? 'إرسال' : 'Send'}
+              >
+                <Send className={`w-4 h-4 ${isAr ? '-scale-x-100' : ''}`} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* [TASK 43 — GEMINI-STYLE CAMERA] large immersive preview with
+            one-tap flip; the 1fps frame pipeline is unaffected. */}
+        {!chatOpen && cameraState === 'active' && (
+          <div className="relative w-full max-w-[300px] sm:max-w-[360px] aspect-[3/4] my-auto rounded-3xl overflow-hidden border border-emerald-500/30 bg-black/60 shadow-2xl">
+            <video ref={cameraVideoRef} autoPlay muted playsInline className="absolute inset-0 w-full h-full object-cover" />
+            <span className="absolute top-3 start-3 flex items-center gap-1.5 text-[10px] font-black text-emerald-300 bg-black/60 px-2 py-1 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              {isAr ? 'الكاميرا شغالة — THOTH شايف' : 'Camera live — THOTH sees this'}
+            </span>
+            <div className="absolute bottom-3 inset-x-0 flex items-center justify-center gap-3">
+              <button onClick={flipCamera} className="w-11 h-11 rounded-full bg-black/55 hover:bg-black/75 border border-white/15 text-white flex items-center justify-center backdrop-blur active:scale-95 transition-all" title={isAr ? 'بدّل الكاميرا' : 'Flip camera'}>
+                <SwitchCamera className="w-5 h-5" />
+              </button>
+              <button onClick={toggleCamera} className="w-11 h-11 rounded-full bg-rose-600/85 hover:bg-rose-500 border border-rose-300/30 text-white flex items-center justify-center active:scale-95 transition-all" title={isAr ? 'إيقاف الكاميرا' : 'Stop camera'}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!chatOpen && cameraState !== 'active' && (
+        <>
         {/* Outer Glow */}
         <div className="relative flex items-center justify-center my-auto">
           
@@ -725,6 +875,8 @@ export function VoiceDialog({
           </button>
 
         </div>
+        </>
+        )}
 
         {/* Status Text */}
         <div className="text-center space-y-1 mt-8 max-w-sm">
@@ -793,6 +945,7 @@ export function VoiceDialog({
             {mediaHint === 'camera-denied' && (isAr ? 'تم رفض إذن الكاميرا — الصوت والمحادثة شغالين عادي' : 'Camera permission denied — voice & chat still work')}
             {mediaHint === 'camera-unavailable' && (isAr ? 'الكاميرا غير متاحة — الصوت والمحادثة شغالين عادي' : 'Camera unavailable — voice & chat still work')}
             {mediaHint === 'camera-ended' && (isAr ? 'الكاميرا اتقفلت' : 'Camera ended')}
+            {mediaHint === 'camera-flip-unavailable' && (isAr ? 'مفيش كاميرا تانية متاحة على الجهاز ده' : 'No other camera available on this device')}
           </span>
         </div>
       )}
@@ -809,83 +962,18 @@ export function VoiceDialog({
               </button>
             </div>
           )}
-          {cameraState === 'active' && (
+          {cameraState === 'active' && chatOpen && (
             <div className="relative w-44 rounded-xl overflow-hidden border border-emerald-500/30 bg-black/40 shadow-lg">
               <video ref={cameraVideoRef} autoPlay muted playsInline className="w-full h-24 object-cover" />
               <span className="absolute top-1 start-1 text-[9px] font-black text-emerald-300 bg-black/60 px-1.5 py-0.5 rounded">{isAr ? 'كاميرا' : 'Camera'}</span>
+              <button onClick={flipCamera} className="absolute top-1 end-7 w-5 h-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center" title={isAr ? 'بدّل الكاميرا' : 'Flip camera'}>
+                <SwitchCamera className="w-3 h-3" />
+              </button>
               <button onClick={toggleCamera} className="absolute top-1 end-1 w-5 h-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center" title={isAr ? 'إيقاف الكاميرا' : 'Stop camera'}>
                 <X className="w-3 h-3" />
               </button>
             </div>
           )}
-        </div>
-      )}
-
-      {/* [MULTIMODAL LIVE] Chat layer — the SAME conversation, additive UI */}
-      {chatOpen && (
-        <div className="w-full px-4 pb-2 relative z-10">
-          <div className="max-w-xl mx-auto bg-white/[0.04] border border-indigo-500/20 rounded-2xl overflow-hidden backdrop-blur-md">
-            <div className="flex items-center gap-2 px-4 py-2 border-b border-indigo-500/15 bg-indigo-500/[0.06]">
-              <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
-              <span className="text-[11px] font-black text-indigo-200">{isAr ? 'المحادثة النصية' : 'Live chat'}</span>
-              {interactionBusy && (
-                <span className="text-[9px] font-black text-indigo-300/80 animate-pulse">{isAr ? 'بيفكر / بيشتغل...' : 'working...'}</span>
-              )}
-              <button
-                onClick={toggleExtendedThinking}
-                className={`ms-auto text-[9px] font-black px-2 py-1 rounded-full border transition-all flex items-center gap-1 ${
-                  extendedThinking
-                    ? 'text-purple-200 bg-purple-500/20 border-purple-500/40'
-                    : 'text-white/50 bg-white/5 border-white/10 hover:text-white/80'
-                }`}
-                title={isAr ? 'نموذج التفكير الموسّع للمهام المعقدة' : 'Extended-thinking model for complex tasks'}
-              >
-                <Brain className="w-3 h-3" />
-                {isAr ? 'تفكير موسّع' : 'Extended'}
-              </button>
-              <button onClick={() => setChatOpen(false)} className="w-6 h-6 rounded-full bg-white/5 hover:bg-white/10 text-white/60 flex items-center justify-center" title={isAr ? 'إغلاق المحادثة' : 'Close chat'}>
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <div ref={chatScrollRef} className="max-h-52 overflow-y-auto px-4 py-3 space-y-2 hide-scrollbar" dir={isAr ? 'rtl' : 'ltr'}>
-              {transcripts.filter(t => t.text && t.text.trim()).length === 0 ? (
-                <p className="text-[11px] text-white/35 text-center py-3">
-                  {isAr ? 'اكتب رسالة أو اتكلم عادي — كل حاجة هتظهر هنا 💬' : 'Type a message or just speak — everything shows here 💬'}
-                </p>
-              ) : (
-                transcripts.filter(t => t.text && t.text.trim()).map((t, i) => (
-                  t.role === 'user' ? (
-                    <div key={i} className="flex justify-end" dir={isAr ? 'rtl' : 'ltr'}>
-                      <p className="max-w-[85%] text-[11px] leading-relaxed text-indigo-100 bg-indigo-500/15 border border-indigo-500/25 rounded-xl px-3 py-1.5">
-                        <span className="font-bold text-indigo-300">{isAr ? 'أنت: ' : 'You: '}</span>{t.text}
-                      </p>
-                    </div>
-                  ) : (
-                    <p key={i} className="text-[11px] leading-relaxed text-white/85" dir={isAr ? 'rtl' : 'ltr'}>
-                      <span className="text-indigo-400 font-bold">THOTH: </span>{t.text}
-                    </p>
-                  )
-                ))
-              )}
-            </div>
-            <div className="flex items-center gap-2 px-3 py-2 border-t border-indigo-500/10">
-              <input
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') sendChatMessage(); }}
-                placeholder={isAr ? 'اكتب لـ THOTH...' : 'Type to THOTH...'}
-                className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-xs text-white placeholder-white/30 outline-none focus:border-indigo-500/40"
-              />
-              <button
-                onClick={sendChatMessage}
-                disabled={!chatInput.trim() || voiceState !== 'listening' && voiceState !== 'speaking'}
-                className="w-9 h-9 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 disabled:opacity-40 text-white flex items-center justify-center shrink-0 active:scale-95 transition-all"
-                title={isAr ? 'إرسال' : 'Send'}
-              >
-                <Send className={`w-4 h-4 ${isAr ? '-scale-x-100' : ''}`} />
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

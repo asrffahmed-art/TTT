@@ -112,17 +112,64 @@ export class VisualInputManager {
     await this.startCamera();
   }
 
-  public async startCamera(): Promise<void> {
+  // ── [TASK 43 — GEMINI-STYLE CAMERA] ─────────────────────────────────
+  // Phones start on the BACK camera ("environment") so the learner can point
+  // at homework / objects, with a one-tap flip. Desktops keep the user-facing
+  // webcam. facingMode uses { ideal } (never exact) so single-camera devices
+  // always succeed. Flip acquires the NEW stream BEFORE dropping the old one,
+  // so a failure leaves the running capture completely untouched.
+  private cameraFacing: 'user' | 'environment' = 'user';
+
+  public getCameraFacing(): 'user' | 'environment' {
+    return this.cameraFacing;
+  }
+
+  private static defaultFacing(): 'user' | 'environment' {
+    try {
+      return (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+        ? 'environment'
+        : 'user';
+    } catch { return 'user'; }
+  }
+
+  private async acquireCamera(facing: 'user' | 'environment'): Promise<MediaStream> {
+    return navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: { ideal: facing } },
+      audio: false
+    });
+  }
+
+  /** One-tap camera flip while the session is live. Resolves false when the
+   *  switch is impossible (no second camera / busy sensor) — the current feed
+   *  keeps streaming in that case. */
+  public async flipCamera(): Promise<boolean> {
+    if (this.destroyed || this.slots.camera.state !== 'active') return false;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+    const next = this.cameraFacing === 'user' ? 'environment' : 'user';
+    try {
+      const stream = await this.acquireCamera(next);
+      this.cameraFacing = next;
+      this.attach('camera', stream); // drops the old capture only after the new one is live
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        track.addEventListener('ended', () => { this.stop('camera'); });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public async startCamera(facing?: 'user' | 'environment'): Promise<void> {
     if (this.destroyed) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       this.setState('camera', 'unavailable');
       return;
     }
+    const want = facing || VisualInputManager.defaultFacing();
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-        audio: false
-      });
+      const stream = await this.acquireCamera(want);
+      this.cameraFacing = want;
       this.attach('camera', stream);
       const track = stream.getVideoTracks()[0];
       if (track) {

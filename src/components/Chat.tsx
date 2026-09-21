@@ -1002,6 +1002,40 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     return () => window.removeEventListener('thoth_inject_broadcast', handler);
   }, []);
 
+  // [ONE CONVERSATION — Task 43] turns from the live voice call (spoken OR
+  // typed) land in THE main chat thread: VoiceDialog dispatches finalized
+  // turns on `thoth_live_turn`; they are appended to the ACTIVE session and
+  // persisted through the exact same saveMessageToFirestore path as normal
+  // messages (and the local-session effect below caches them like any other
+  // message). Registered users: normal server persistence. Guests:
+  // saveMessageToFirestore early-returns -> zero server storage (red line).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      const text = String(d.text || '').trim();
+      if (!text) return;
+      const isUserTurn = d.role === 'user';
+      const timeString = isAr
+        ? new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+        : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const mirrored: Message = {
+        id: `live_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        senderId: isUserTurn ? (getEffectiveUserId() || 'user') : 'model',
+        chatId: sessionIdRef.current || undefined,
+        userId: getEffectiveUserId() || undefined,
+        text,
+        isUser: isUserTurn,
+        time: timeString,
+        timestamp: new Date().toISOString(),
+        messageType: 'text'
+      };
+      setMessages(prev => [...prev, mirrored]);
+      saveMessageToFirestore(mirrored);
+    };
+    window.addEventListener('thoth_live_turn', handler);
+    return () => window.removeEventListener('thoth_live_turn', handler);
+  }, []);
+
   useEffect(() => {
     if (!currentSessionId) return;
 
