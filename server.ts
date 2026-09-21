@@ -10441,6 +10441,7 @@ app.all("/api/*", (req, res) => {
         // failover chain below keeps the call alive.
         const transparentHandoff = (newModel: string, why: string) => {
           const previousModel = activeLiveModel;
+          suppressNextSessionClose = true;
           try { session?.close?.(); } catch {}
           connectLive(newModel, true)
             .then((s: any) => {
@@ -10462,6 +10463,8 @@ app.all("/api/*", (req, res) => {
             })
             .catch((e: any) => console.warn("[GEMINI LIVE] handoff connect rejected — failover chain continues:", e?.message || e));
         };
+        livePushTurn = pushRecentTurn;
+        liveRouteText = maybeRouteToExtended;
 
         const SETUP_TIMEOUT_MS = 12000; // abandon a silent/hung model after 12s
 
@@ -10517,6 +10520,9 @@ app.all("/api/*", (req, res) => {
         // and the silent-hang case (no setupComplete) — failing over to the
         // fallback model transparently. The fallback attempt itself has no
         // watchdog (proven model; behaves exactly like the old code).
+        // [MODEL HANDOFF] set before a deliberate session.close() during the
+        // transparent model swap, so onclose does NOT tear down the client WS.
+        let suppressNextSessionClose = false;
         const connectLive = (modelName: string, isFailoverCandidate: boolean): Promise<any> => new Promise((resolve, reject) => {
           // Per-attempt flag: this session is being abandoned in favour of the
           // fallback — its onclose must NOT tear down the browser socket.
@@ -10636,6 +10642,7 @@ app.all("/api/*", (req, res) => {
               onclose: () => {
                 clearWatchdog();
                 console.log("[GEMINI LIVE] Live session closed:", modelName);
+                if (suppressNextSessionClose) { suppressNextSessionClose = false; return; } // [MODEL HANDOFF] deliberate mid-session swap
                 if (switchedAway) return; // deliberate close during model failover
                 // Primary closed the underlying socket BEFORE completing
                 // setup (e.g. invalid/overloaded model) — treat as failure:
@@ -10705,6 +10712,11 @@ app.all("/api/*", (req, res) => {
         }
       }
       
+      // [GEMINI 3.8 LIVE UPGRADE] live-router hooks — wired by the standard
+      // assistant branch; the translate branch leaves them null (no-op).
+      let livePushTurn: ((role: 'user' | 'model', text: string) => void) | null = null;
+      let liveRouteText: ((text: string) => void) | null = null;
+
       ws.on("message", async (data) => {
         try {
           const msg = JSON.parse(data.toString());
@@ -10730,8 +10742,8 @@ app.all("/api/*", (req, res) => {
               console.warn("[GEMINI LIVE] chat text notice:", e?.message || e);
             }
             if (!msg.hidden) {
-              pushRecentTurn('user', textIn);
-              maybeRouteToExtended(textIn);
+              livePushTurn?.('user', textIn);
+              liveRouteText?.(textIn);
             }
             return;
           }
