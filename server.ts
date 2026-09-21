@@ -10499,7 +10499,21 @@ app.all("/api/*", (req, res) => {
         // [3.8 CHAIN] extended-thinking -> default 3.8-live -> proven 2.5
         // native. The old single-step chain is preserved for every other id.
         let defaultLiveTried = false;
+        let extendedRetryUsed = false;
         const handlePrimaryFailure = (failedModel: string, why: string) => {
+          if (isExtendedModel(failedModel) && !extendedRetryUsed) {
+            // One delayed retry: right after a handoff close, a brand-new
+            // session can hit a brief creation-rate window — a 2s backoff
+            // absorbs it before we degrade to the default model.
+            extendedRetryUsed = true;
+            console.warn("[GEMINI LIVE] extended connect failed (" + why + ") — retrying once in 2s");
+            setTimeout(() => {
+              if (ws.readyState !== WebSocket.OPEN) return;
+              connectLive(EXTENDED_THINKING_MODEL, true).catch((e: any) =>
+                console.warn("[GEMINI LIVE] extended retry rejected:", e?.message || e));
+            }, 2000);
+            return;
+          }
           if (isExtendedModel(failedModel) && !defaultLiveTried) {
             defaultLiveTried = true;
             console.warn("[GEMINI LIVE] extended model unavailable (" + why + ") — trying default 3.8 Live");
