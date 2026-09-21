@@ -10532,6 +10532,10 @@ app.all("/api/*", (req, res) => {
           // Per-attempt flag: this session is being abandoned in favour of the
           // fallback — its onclose must NOT tear down the browser socket.
           let switchedAway = false;
+          // [MODEL HANDOFF FIX] per-attempt setup tracking: the outer
+          // setupCompleted stays true from earlier attempts (boot / handoff),
+          // which made every later watchdog silently skip failover.
+          let attemptSetupComplete = false;
           let settled = false;
           let resolvedSession: any = null;
           let watchdog: any = null;
@@ -10539,7 +10543,7 @@ app.all("/api/*", (req, res) => {
 
           if (isFailoverCandidate) {
             watchdog = setTimeout(() => {
-              if (setupCompleted || switchedAway) return;
+              if (attemptSetupComplete || switchedAway) return;
               switchedAway = true;
               try { resolvedSession?.close(); } catch (e) {}
               handlePrimaryFailure(modelName, 'no setupComplete within ' + (SETUP_TIMEOUT_MS / 1000) + 's');
@@ -10577,6 +10581,7 @@ app.all("/api/*", (req, res) => {
               onmessage: (message: LiveServerMessage) => {
                 if ((message as any).setupComplete) {
                   setupCompleted = true;
+                  attemptSetupComplete = true;
                   activeLiveModel = modelName;
                   clearWatchdog();
                   console.log("[GEMINI LIVE] Setup complete from callback:", modelName);
@@ -10652,7 +10657,7 @@ app.all("/api/*", (req, res) => {
                 // Primary closed the underlying socket BEFORE completing
                 // setup (e.g. invalid/overloaded model) — treat as failure:
                 // fail over transparently instead of killing the user's call.
-                if (isFailoverCandidate && !setupCompleted) {
+                if (isFailoverCandidate && !attemptSetupComplete) {
                   switchedAway = true;
                   handlePrimaryFailure(modelName, 'closed before setup complete');
                   return;
@@ -10663,7 +10668,7 @@ app.all("/api/*", (req, res) => {
               onerror: (err: any) => {
                 console.error("[GEMINI LIVE ERROR] (" + modelName + "):", err);
                 // Transparent failover: primary died BEFORE completing setup
-                if (isFailoverCandidate && !setupCompleted) {
+                if (isFailoverCandidate && !attemptSetupComplete) {
                   switchedAway = true;
                   clearWatchdog();
                   try { resolvedSession?.close(); } catch (e) {}
@@ -10683,9 +10688,9 @@ app.all("/api/*", (req, res) => {
           }).catch((e: any) => {
             // connect() itself rejected (unknown model / auth / network)
             clearWatchdog();
-            if (isFailoverCandidate && !setupCompleted) {
+            if (isFailoverCandidate && !attemptSetupComplete) {
               switchedAway = true;
-              startFallback('connect failed: ' + (e?.message || String(e)));
+              handlePrimaryFailure(modelName, 'connect failed: ' + (e?.message || String(e)));
               if (!settled) { settled = true; resolve(null); } // failover drives the session
             } else if (!settled) {
               settled = true;
