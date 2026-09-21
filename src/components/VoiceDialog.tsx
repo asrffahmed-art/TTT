@@ -419,12 +419,27 @@ export function VoiceDialog({
       setInteractionBusy(false);
       if (msg.ok && msg.text) {
         const full = String(msg.text);
-        const codeMatch = /```(?:html|htm)?\s*\n([\s\S]*?)```/i.exec(full);
+        // [TASK 45 FIX] the build code may arrive fenced with ANY language
+        // (html/javascript/…) or even bare — extract robustly so the in-call
+        // preview button and the main-chat artifact both always work.
+        const fence = /```[a-zA-Z0-9]*\s*\n([\s\S]*?)```/i.exec(full);
+        let code = fence ? fence[1] : undefined;
+        let mirror = full;
+        if (!code) {
+          const hIdx = full.search(/<!DOCTYPE|<html/i);
+          if (hIdx !== -1) {
+            const endIdx = full.toLowerCase().lastIndexOf('</html>');
+            code = endIdx !== -1 ? full.slice(hIdx, endIdx + 7) : full.slice(hIdx);
+            // normalize the mirror so Chat.tsx renders a real artifact card
+            const tail = full.slice(hIdx + code.length).trim();
+            mirror = (full.slice(0, hIdx).trim() + '\n```html\n' + code + '\n```\n' + tail).trim();
+          }
+        }
         const head = full.replace(/```[\s\S]*?```/g, '').trim();
         const summary = (head || 'الوكيل خلص البناء — المنتج جاهز.').slice(0, 400);
-        setTranscripts(prev => [...prev, { role: 'model', text: summary, kind: 'agent', code: codeMatch ? codeMatch[1] : undefined }]);
+        setTranscripts(prev => [...prev, { role: 'model', text: summary, kind: 'agent', code }]);
         try { flushLiveTurns(); } catch {}
-        dispatchLiveTurn('model', full);
+        dispatchLiveTurn('model', mirror);
       } else if (msg.error === 'busy' || msg.error === 'cap' || msg.error === 'quota' || msg.error === 'build_failed') {
         showToast(msg.message || (isAr ? 'تعذر تنفيذ طلب الوكيل' : 'Agent request failed'));
       } else {
