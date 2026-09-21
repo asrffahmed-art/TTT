@@ -198,7 +198,14 @@ export class VisualInputManager {
       video.playsInline = true;
       video.autoplay = true;
       video.srcObject = stream;
-      // Load the decoder without touching the DOM; drawImage reads frames.
+      // [TASK 44 — DECODER FIX] off-DOM video elements stall on iOS Safari /
+      // some Android WebViews (videoWidth stays 0 -> captureTick bails forever
+      // -> the model never receives a single frame). Attach the decoder to the
+      // document, visually hidden and untouchable — the standard reliable way.
+      video.setAttribute('playsinline', '');
+      video.setAttribute('disablepictureinpicture', '');
+      video.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:2px;height:2px;opacity:0.001;pointer-events:none;z-index:-1;';
+      try { document.body.appendChild(video); } catch {}
       video.play().catch(() => {});
       slot.video = video;
       slot.canvas = document.createElement('canvas');
@@ -219,7 +226,7 @@ export class VisualInputManager {
   public stop(source: VisualSource, silent = false) {
     const slot = this.slots[source];
     try { slot.stream?.getTracks().forEach(t => { try { t.stop(); } catch {} }); } catch {}
-    try { if (slot.video) { slot.video.srcObject = null; } } catch {}
+    try { if (slot.video) { slot.video.srcObject = null; try { slot.video.remove(); } catch {} } } catch {}
     slot.stream = null;
     slot.video = null;
     slot.canvas = null;
@@ -244,7 +251,7 @@ export class VisualInputManager {
     if (state !== 'active') {
       const slot = this.slots[source];
       try { slot.stream?.getTracks().forEach(t => { try { t.stop(); } catch {} }); } catch {}
-      try { if (slot.video) slot.video.srcObject = null; } catch {}
+      try { if (slot.video) { slot.video.srcObject = null; try { slot.video.remove(); } catch {} } } catch {}
       slot.stream = null; slot.video = null; slot.canvas = null;
       if (!this.anyActive()) this.stopScheduler();
     }

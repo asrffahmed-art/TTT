@@ -10510,8 +10510,16 @@ app.all("/api/*", (req, res) => {
             console.warn("[GEMINI LIVE] extended connect failed (" + why + ") — retrying once in 2s");
             setTimeout(() => {
               if (ws.readyState !== WebSocket.OPEN) return;
-              connectLive(EXTENDED_THINKING_MODEL, true).catch((e: any) =>
-                console.warn("[GEMINI LIVE] extended retry rejected:", e?.message || e));
+              // [TASK 44 — CHAIN FIX] a rejected retry used to DEAD-END the
+              // call (log only): the user sat on "connecting" until the socket
+              // died — the reported "بيقول فشل" on thinking. The chain must
+              // continue: handlePrimaryFailure is already past the retry gate
+              // (extendedRetryUsed), so this now degrades to default 3.8-live
+              // then the proven 2.5 native fallback, exactly like first boot.
+              connectLive(EXTENDED_THINKING_MODEL, true).catch((e: any) => {
+                console.warn("[GEMINI LIVE] extended retry rejected — continuing chain:", e?.message || e);
+                handlePrimaryFailure(EXTENDED_THINKING_MODEL, "retry failed: " + (e?.message || String(e)));
+              });
             }, 2000);
             return;
           }
@@ -10569,7 +10577,7 @@ app.all("/api/*", (req, res) => {
             model: modelName,
             config: {
               responseModalities: [Modality.AUDIO],
-                systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي). قواعد إلزامية: مقر الشركة أسيوط بمصر وليس لها أي فرع فعلي وكل خدماتها أونلاين. اسم المؤسس «أحمد أشرف حمزة محمد» يُذكر فقط إذا سأل المستخدم عن المؤسس بسؤال صريح ومباشر، ويكون آخر جملة في الرد خالصاً بدون تفاصيل إضافية عنه." + voiceTeachDirective,
+                systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. [رؤية حقيقية] أنت ترى فعلاً: إذا وصلت إطارات من كاميرا المستخدم أو شاشته فانظر فيها وصِف محتواها وتفاعل معه بثقة — وممنوع منعًا باتًا أن تقول إنك لا ترى أو أن الكاميرا لا تعمل. [بناء وتطوير] إذا طلب المستخدم بناء تطبيق أو لعبة أو كتابة كود، اكتب الكود مباشرة في المحادثة النصية داخل المكالمة، وإذا كان المشروع كبيرًا وجّهه بلطف لوضع «الوكيل» في المحادثة الرئيسية لبناء تطبيق جاهز كامل — ولا تقول «فشل» أبدًا. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي). قواعد إلزامية: مقر الشركة أسيوط بمصر وليس لها أي فرع فعلي وكل خدماتها أونلاين. اسم المؤسس «أحمد أشرف حمزة محمد» يُذكر فقط إذا سأل المستخدم عن المؤسس بسؤال صريح ومباشر، ويكون آخر جملة في الرد خالصاً بدون تفاصيل إضافية عنه." + voiceTeachDirective,
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: finalVoiceName } },
               },
@@ -10585,9 +10593,12 @@ app.all("/api/*", (req, res) => {
               // query params the session behaves like the previous build.
               inputAudioTranscription: {},
               sessionResumption: resumeHandleParam ? { handle: resumeHandleParam } : {},
-              ...(isExtendedModel(modelName)
-                ? { mediaResolution: "MEDIA_RESOLUTION_MEDIUM" }
-                : { mediaResolution: "MEDIA_RESOLUTION_LOW" }),
+              // [TASK 44] MEDIA_RESOLUTION_MEDIUM for EVERY Live model: LOW
+              // tiles were too coarse to read homework / code from camera
+              // frames — the whole point of visual input here. Frames still
+              // flow at 1 fps with duplicate suppression, only while the user
+              // explicitly enables a source.
+              mediaResolution: "MEDIA_RESOLUTION_MEDIUM",
               ...(isExtendedModel(modelName)
                 ? { thinkingConfig: { thinkingLevel: thinkingLevelParam || "high" } }
                 : {}),
@@ -10766,7 +10777,11 @@ app.all("/api/*", (req, res) => {
             try {
               await session.sendClientContent({
                 turns: [{ role: 'user', parts: [{ text: textIn }] }],
-                turnComplete: true
+                // [TASK 44 — SILENT CONTEXT] hidden payloads (main-chat seed /
+                // reconnect replay) enter the session WITHOUT triggering an
+                // audible reaction: turnComplete:false adds the content to the
+                // conversation and the model uses it from the next real turn.
+                turnComplete: !msg.hidden
               });
             } catch (e: any) {
               console.warn("[GEMINI LIVE] chat text notice:", e?.message || e);
@@ -10779,10 +10794,16 @@ app.all("/api/*", (req, res) => {
           }
           if (msg.type === "image" && msg.data && session) {
             const imgData = String(msg.data);
+            // [TASK 44 — VISION FIX] camera/screen frames were flowing all the
+            // way here, yet gemini-3.8-live / extended-thinking answered
+            // "I can't see": the native-audio 3.8 models consume realtime
+            // frames through the OFFICIAL `video` channel and silently ignore
+            // the legacy `media` field. `video` first, `media` kept only as a
+            // compatibility fallback for models that reject it.
             try {
-              await session.sendRealtimeInput({ media: { mimeType: msg.mimeType || "image/jpeg", data: imgData } });
+              await session.sendRealtimeInput({ video: { mimeType: msg.mimeType || "image/jpeg", data: imgData } });
             } catch (e: any) {
-              try { await session.sendRealtimeInput({ video: { mimeType: msg.mimeType || "image/jpeg", data: imgData } }); }
+              try { await session.sendRealtimeInput({ media: { mimeType: msg.mimeType || "image/jpeg", data: imgData } }); }
               catch (e2: any) { console.warn("[GEMINI LIVE] visual frame notice:", e2?.message || e2); }
             }
             return;

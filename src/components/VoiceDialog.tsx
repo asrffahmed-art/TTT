@@ -71,6 +71,18 @@ export function VoiceDialog({
   const pendingContextReplayRef = useRef(false);
   const lastUserPieceAtRef = useRef(0);
   const lastModelPieceAtRef = useRef(0);
+  // [ONE CONVERSATION — Task 44] the live call starts INSIDE the user's main
+  // chat thread: Chat.tsx publishes the active session's last messages on
+  // window.__thothActiveChatTail; we seed the model with them as silent
+  // context and render them at the top of the in-call view ONCE per call.
+  const seededThisCallRef = useRef(false);
+  const readMainChatTail = (): { isUser: boolean; text: string }[] => {
+    try {
+      const tail = (window as any).__thothActiveChatTail;
+      if (!Array.isArray(tail)) return [];
+      return tail.filter((t: any) => t && typeof t.text === 'string' && t.text.trim()).slice(-6);
+    } catch { return []; }
+  };
   const [mediaHint, setMediaHint] = useState<string>('');
   const mediaHintTimerRef = useRef<any>(null);
   const transcriptsRef = useRef<{role: 'user'|'model', text: string}[]>([]);
@@ -273,6 +285,21 @@ export function VoiceDialog({
             .join('\n').slice(-2500);
           if (replay) engineRef.current?.sendRaw({ type: 'text', text: '【سياق المكالمة بعد إعادة الاتصال أو تبديل النموذج — استمر طبيعيًا دون تعليق عليه】\n' + replay, hidden: true });
         } catch {}
+      }
+      // [ONE CONVERSATION — Task 44] the model must REMEMBER the main chat:
+      // its last turns enter the Live session as SILENT hidden context (the
+      // server sends hidden text with turnComplete:false -> no audible
+      // reaction). Once per call; tutor lessons keep their focused persona.
+      if (!seededThisCallRef.current) {
+        seededThisCallRef.current = true;
+        if (!teachTopic) {
+          try {
+            const seed = readMainChatTail()
+              .map(t => (t.isUser ? 'المستخدم: ' : 'أنت: ') + t.text)
+              .join('\n').slice(-2500);
+            if (seed) engineRef.current?.sendRaw({ type: 'text', hidden: true, text: '【سياق محادثتك الرئيسية الحالية مع المستخدم — اقرأه وكمّل طبيعيًا من عنده دون تلخيصه أو التعليق عليه】\n' + seed });
+          } catch {}
+        }
       }
       const engine = engineRef.current;
       if (engine) {
@@ -485,6 +512,19 @@ export function VoiceDialog({
     try { getEngine().unlockAudio(); } catch {}
     isSessionActiveRef.current = true;
     setVoiceState('connecting');
+    // [ONE CONVERSATION] fresh dialog -> open on the main chat's last turns so
+    // the user SEES one continuous thread (not a new empty bubble box). Never
+    // for tutor lessons: those are focused single-topic sessions.
+    seededThisCallRef.current = false;
+    if (!teachTopic && transcriptsRef.current.length === 0) {
+      try {
+        const seeded = readMainChatTail().map(t => ({
+          role: (t.isUser ? 'user' : 'model') as 'user' | 'model',
+          text: t.text
+        }));
+        if (seeded.length > 0) setTranscripts(seeded);
+      } catch {}
+    }
 
     try {
       const userId = localStorage.getItem('app-user-id') || localStorage.getItem('thoth_user_id') || '';

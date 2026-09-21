@@ -1036,6 +1036,19 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     return () => window.removeEventListener('thoth_live_turn', handler);
   }, []);
 
+  // [ONE CONVERSATION — Task 44] live snapshot of the active session's last
+  // messages for VoiceDialog: the live model receives the main-chat tail as
+  // silent context (it "remembers the chat"), and the in-call view opens on
+  // the same thread. Pure window-publisher — zero behaviour change here.
+  useEffect(() => {
+    try {
+      (window as any).__thothActiveChatTail = messages
+        .filter(m => m.text && String(m.text).trim())
+        .slice(-8)
+        .map(m => ({ isUser: !!m.isUser, text: String(m.text).slice(0, 600) }));
+    } catch {}
+  }, [messages]);
+
   useEffect(() => {
     if (!currentSessionId) return;
 

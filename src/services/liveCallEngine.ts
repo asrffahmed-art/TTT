@@ -55,6 +55,13 @@ const PLAYBACK_TAIL_MS = 450;     // speaker echo decay before mic reopens
                                    // (the "weird mid-call sound" on some devices).
 const NOISE_GATE_RMS = 0.004;     // skip near-silence so hum never confuses the model
 const JITTER_PREBUFFER_S = 0.15;  // initial play delay per speech burst (anti-stutter)
+// [TASK 44 — FULL-DUPLEX BARGE-IN] while the assistant is speaking the mic
+// keeps streaming (the Gemini experience) but only frames above this speech
+// threshold are forwarded: browser AEC already subtracts the model's own
+// playback from the mic capture, so post-AEC room echo sits far below this
+// line while a real human voice at mic distance sits above it. Real speech
+// during playback -> server VAD -> `interrupted` -> queue fades out.
+const BARGE_IN_RMS = 0.02;
 const STALE_QUEUE_S = 0.25;       // queue finished this long ago -> force-unblock mic
 
 // Inline AudioWorklet processor: buffers 1600 samples = exactly 100 ms at
@@ -148,8 +155,13 @@ export class LiveCallEngine {
     silentFrames: 0, gateFrames: 0, tailFrames: 0,
     received: 0, playedChunks: 0, underruns: 0, interrupts: 0, fallbacks: 0,
     reconnects: 0, imagesSent: 0,
+    bargeInFrames: 0,
     lastSendAgoMs: 0, lastSendAt: 0
   };
+
+  // [TASK 44] adaptive jitter pre-buffer: grows on observed underruns (mobile
+  // networks), capped at 400 ms. Resets when the call ends.
+  private prebufferS = JITTER_PREBUFFER_S;
 
   constructor(cb: LiveCallEngineCallbacks) {
     this.cb = cb;
@@ -389,8 +401,14 @@ export class LiveCallEngine {
     const nowMs = performance.now();
     if (nowMs - this.micOpenTime < MIC_OPEN_FILTER_MS) { this.stats.gateFrames++; return; }
 
-    // Half-duplex echo guard: never stream while the assistant plays, but with
-    // a staleness sweep so a lost onended handler can never deadlock the mic.
+    // [TASK 44 — FULL-DUPLEX BARGE-IN] the mic no longer hard-blocks while
+    // the assistant speaks (the old half-duplex guard swallowed the user's
+    // first words after every reply and made interruption impossible — the
+    // reported "الميك وحش"). During playback only clearly-speech frames pass
+    // (BARGE_IN_RMS): the model's server VAD detects the barge-in and emits
+    // `interrupted`, which fades the queue out. The staleness sweep still
+    // force-unblocks a lost-queue deadlock, and the Task 41 echo tail below
+    // is byte-identical.
     if (this.activeSources.length > 0) {
       const out = this.outCtx;
       const queueDone = !out || out.state === 'closed' || this.nextPlayTime < out.currentTime - STALE_QUEUE_S;
@@ -398,9 +416,12 @@ export class LiveCallEngine {
         this.activeSources.forEach(s => { try { s.onended = null; s.stop(); } catch {} });
         this.activeSources = [];
       } else {
-        this.stats.blockedFrames++;
-        this.lastPlaybackEnd = nowMs;
-        return;
+        if (rms < BARGE_IN_RMS) {
+          this.stats.blockedFrames++;
+          this.lastPlaybackEnd = nowMs;
+          return;
+        }
+        this.stats.bargeInFrames++; // real speech over playback -> let it through
       }
     }
     if (nowMs - this.lastPlaybackEnd < PLAYBACK_TAIL_MS) { this.stats.tailFrames++; return; }
@@ -481,12 +502,18 @@ export class LiveCallEngine {
       const currentTime = ctx.currentTime;
       const freshBurst = this.activeSources.length === 0 || this.nextPlayTime < currentTime;
       if (freshBurst) {
-        // 150 ms jitter pre-buffer then a 5 ms fade-in — no onset click, no stutter
-        this.nextPlayTime = Math.max(currentTime + JITTER_PREBUFFER_S, this.nextPlayTime);
+        // Adaptive jitter pre-buffer (Task 44: grows on observed underruns so
+        // choppy mobile audio heals itself) then a 5 ms fade-in — no onset
+        // click, no stutter.
+        this.nextPlayTime = Math.max(currentTime + this.prebufferS, this.nextPlayTime);
         const fadeLen = Math.min(120, float32.length);
         for (let i = 0; i < fadeLen; i++) float32[i] *= i / fadeLen;
       } else if (this.nextPlayTime < currentTime) {
         this.stats.underruns++;
+        // [TASK 44] network proved slower than the model's burst cadence —
+        // deepen the buffer for the NEXT burst (capped 400 ms) so the queue
+        // stops running dry. The current gap still recovers ASAP below.
+        this.prebufferS = Math.min(0.4, this.prebufferS + 0.05);
         this.nextPlayTime = currentTime + 0.01;
         // [NOISE FIX] resume-after-gap must fade in too: a chunk starting at
         // full amplitude right after a queue gap is a guaranteed click. Same
@@ -635,6 +662,7 @@ export class LiveCallEngine {
     this.lastPlaybackEnd = 0;
     this.captureStartedForGen = 0;
     this.usingNativeFallback = false;
+    this.prebufferS = JITTER_PREBUFFER_S; // [TASK 44] fresh call, fresh buffer
     this.releaseWakeLock();
     this.setMediaSession(false);
     this.setState('stopped');
