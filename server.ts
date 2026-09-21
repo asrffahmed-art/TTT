@@ -10052,6 +10052,11 @@ app.all("/api/*", (req, res) => {
     let guestUsageInterval: any = null;
     const connectionStartTime = Date.now();
     let guestDocRef: any = null;
+    // [GEMINI 3.8 LIVE UPGRADE] live-router hooks — wired by the standard
+    // assistant branch; the translate branch leaves them null (no-op).
+    // Declared here (handler top) so branch wiring never hits a TDZ.
+    let livePushTurn: ((role: 'user' | 'model', text: string) => void) | null = null;
+    let liveRouteText: ((text: string) => void) | null = null;
     let effectiveDeviceId = '';
     let clientIp = '';
     let todayStr = '';
@@ -10712,11 +10717,6 @@ app.all("/api/*", (req, res) => {
         }
       }
       
-      // [GEMINI 3.8 LIVE UPGRADE] live-router hooks — wired by the standard
-      // assistant branch; the translate branch leaves them null (no-op).
-      let livePushTurn: ((role: 'user' | 'model', text: string) => void) | null = null;
-      let liveRouteText: ((text: string) => void) | null = null;
-
       ws.on("message", async (data) => {
         try {
           const msg = JSON.parse(data.toString());
