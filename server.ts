@@ -10496,27 +10496,40 @@ app.all("/api/*", (req, res) => {
         let voiceTurnBuffer = '';
         let filesThisCall = 0;
 
-        const runAgentBuild = async (query: string, source: 'typed' | 'voice') => {
+        const runAgentBuild = async (query: string, source: 'typed' | 'voice' | 'voice_tool', toolCallId?: string) => {
+          // [TASK 47] The function-calling path MUST always receive a
+          // toolResponse or the live model stalls on the pending call — this
+          // helper forwards every rejection to the session as the real result.
+          const toolFail = async (message: string) => {
+            if (toolCallId) {
+              try { await session?.sendToolResponse({ functionResponses: [{ id: toolCallId, name: 'request_agent_build', response: { ok: false, message } }] }); } catch (e: any) {}
+            }
+          };
           if (agentBusy) {
             try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'busy', message: 'الوكيل بيشتغل على طلب حاليًا — استنى يخلص الأول.' })); } catch {}
+            await toolFail('الوكيل بيشتغل على طلب حاليًا — استنى يخلص الأول.');
             return;
           }
           if (agentRunsThisCall >= 3) {
             try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'cap', message: 'وصلت للحد الأقصى (3 عمليات بناء) في نفس المكالمة.' })); } catch {}
+            await toolFail('وصل المستخدم للحد الأقصى (3 عمليات بناء) في هذه المكالمة — أخبره بلطف.');
             return;
           }
           if (isGuest || !userId) {
             // RED LINE: agentRun is registered-users only (guest quota = 0).
             try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'login_required', message: 'الوكيل الذكي متاح للمستخدمين المسجلين — سجل دخول أو اعمل حساب مجاني.' })); } catch {}
+            await toolFail('الوكيل الذكي متاح للمستخدمين المسجلين فقط — أخبر المستخدم بلطف أن يسجل دخول أو يعمل حساب مجاني لاستخدام البناء.');
             return;
           }
           agentBusy = true;
+          lastVoiceAgentAt = Date.now();
           try { ws.send(JSON.stringify({ type: 'agent_status', state: 'started', source })); } catch {}
           try {
             const agentIp = clientIp || (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1').toString().split(',')[0].trim();
             const quota = await checkAndIncrementUsageServerSide(userId, agentIp, 'agentRun', 1);
             if (!quota.allowed) {
               try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'quota', message: quota.errorText || 'وصلت لحد الاستخدام اليومي لوضع الوكيل.' })); } catch {}
+              await toolFail(quota.errorText || 'وصل المستخدم لحد الاستخدام اليومي لوضع الوكيل — أخبره بلطف.');
               return;
             }
             agentRunsThisCall++;
@@ -10538,16 +10551,25 @@ app.all("/api/*", (req, res) => {
             }
             if (!resultText) throw lastErr || new Error('agent chain exhausted');
             try { ws.send(JSON.stringify({ type: 'agent_result', ok: true, text: resultText })); } catch {}
-            pushRecentTurn('model', 'أنت (وضع الوكيل): نفّذت طلب البناء كاملًا وظهر المنتج الجاهز للمستخدم في المحادثة النصية مع معاينة تفاعلية.');
-            try {
-              await session?.sendClientContent({
-                turns: [{ role: 'user', parts: [{ text: '【نظام الوكيل — تنبيه داخلي】تم تنفيذ طلب البناء («' + String(query).slice(0, 120) + '») بنجاح كامل، والمنتج جاهز ظاهر أمام المستخدم في المحادثة النصية مع معاينة تفاعلية. أخبر المستخدم بجملة قصيرة جدًا أن البناء خلص وظاهر عنده.' }] }],
-                turnComplete: true
-              });
-            } catch (e: any) { console.warn("[GEMINI LIVE] agent completion note notice:", e?.message || e); }
+            if (toolCallId) {
+              // [TASK 47] The tool result is the model's ONLY truth source:
+              // it now audibly confirms completion based on this real outcome.
+              try {
+                await session?.sendToolResponse({ functionResponses: [{ id: toolCallId, name: 'request_agent_build', response: { ok: true, message: 'تم بناء المنتج بنجاح كامل وظاهر أمام المستخدم في المحادثة النصية للمكالمة مع معاينة تفاعلية. أخبر المستخدم بجملة قصيرة أن البناء خلص وظاهر عنده.' } }] });
+              } catch (e: any) { console.warn('[GEMINI LIVE] tool response failed:', e?.message || e); }
+            } else {
+              pushRecentTurn('model', 'أنت (وضع الوكيل): نفّذت طلب البناء كاملًا وظهر المنتج الجاهز للمستخدم في المحادثة النصية مع معاينة تفاعلية.');
+              try {
+                await session?.sendClientContent({
+                  turns: [{ role: 'user', parts: [{ text: '【نظام الوكيل — تنبيه داخلي】تم تنفيذ طلب البناء («' + String(query).slice(0, 120) + '») بنجاح كامل، والمنتج جاهز ظاهر أمام المستخدم في المحادثة النصية مع معاينة تفاعلية. أخبر المستخدم بجملة قصيرة جدًا أن البناء خلص وظاهر عنده.' }] }],
+                  turnComplete: true
+                });
+              } catch (e: any) { console.warn("[GEMINI LIVE] agent completion note notice:", e?.message || e); }
+            }
           } catch (e: any) {
             console.warn('[GEMINI LIVE] agent build failed:', e?.message || e);
             try { ws.send(JSON.stringify({ type: 'agent_result', ok: false, error: 'build_failed', message: 'تعذر إتمام البناء الآن بسبب ضغط الخدمة — جرب تاني بعد شوية.' })); } catch {}
+            await toolFail('تعذر إتمام البناء الآن بسبب ضغط الخدمة — أخبر المستخدم بلطف أن يحاول مرة أخرى بعد قليل.');
           } finally {
             agentBusy = false;
           }
@@ -10733,7 +10755,7 @@ app.all("/api/*", (req, res) => {
             model: modelName,
             config: {
               responseModalities: [Modality.AUDIO],
-                systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. [رؤية حقيقية] أنت ترى فعلاً: إذا وصلت إطارات من كاميرا المستخدم أو شاشته فانظر فيها وصِف محتواها وتفاعل معه بثقة — وممنوع منعًا باتًا أن تقول إنك لا ترى أو أن الكاميرا لا تعمل. [بناء وتطوير] إذا طلب المستخدم بناء تطبيق أو لعبة أو موقع أو كتابة كود، قول جملة قصيرة واثقة إنك هتبدأ البناء فورًا — نظام الوكيل الداخلي في THOTH بينفّذ البناء كاملًا تلقائيًا والمنتج الجاهز بيظهر في المحادثة النصية للمكالمة، فممنوع تعتذر أو تقول إنك مش قادر — ولو المستخدم سأل عن النتيجة وجّهه بلطف للمحادثة النصية في نفس المكالمة. اكتب أكوادًا داخل المحادثة فقط لو الكود بسيط جدًا (سطر أو سطرين). وممنوع منعًا باتًا كلمة «فشل» أو الاعتذار الطويل. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي). قواعد إلزامية: مقر الشركة أسيوط بمصر وليس لها أي فرع فعلي وكل خدماتها أونلاين. اسم المؤسس «أحمد أشرف حمزة محمد» يُذكر فقط إذا سأل المستخدم عن المؤسس بسؤال صريح ومباشر، ويكون آخر جملة في الرد خالصاً بدون تفاصيل إضافية عنه." + voiceTeachDirective,
+                systemInstruction: "أنت المساعد الصوتي المباشر لمنصة THOTH. استمع بتركيز عالٍ ودقة فائقة لكلام المستخدم بالعامية المصرية واللغة العربية. تحدث بتلقائية ووضوح تام، وقدم إجابات طبيعية وشاملة. [رؤية حقيقية] أنت ترى فعلاً: إذا وصلت إطارات من كاميرا المستخدم أو شاشته فانظر فيها وصِف محتواها وتفاعل معه بثقة — وممنوع منعًا باتًا أن تقول إنك لا ترى أو أن الكاميرا لا تعمل. [بناء وتطوير] إذا طلب المستخدم بناء تطبيق أو لعبة أو موقع أو أداة أو أي منتج أو كتابة كود: استدعِ أداة request_agent_build فورًا ومرر لها وصف الطلب كما فهمته من كلامه، وقبل الاستدعاء قول جملة قصيرة واحدة إنك هتبدأ البناء حالًا. ممنوع منعًا باتًا تأكيد إتمام البناء أو قول «كل حاجة جاهزة» قبل استدعاء الأداة أو قبل وصول نتيجتها: لما نتيجة الأداة توصل ok=true قول بجملة قصيرة إن البناء خلص والمنتج ظاهر في المحادثة النصية للمكالمة، ولو ok=false اذكر السبب بلطف باختصار وادعُ المستخدم يحاول مرة أخرى. فممنوع تعتذر أو تقول إنك مش قادر، وممنوع كلمة «فشل». ولو المستخدم سأل عن النتيجة وجّهه بلطف للمحادثة النصية في نفس المكالمة. اكتب أكوادًا داخل المحادثة فقط لو الكود بسيط جدًا (سطر أو سطرين). وممنوع منعًا باتًا كلمة «فشل» أو الاعتذار الطويل. إذا سُئلت عن هويتك، عرّف عن نفسك بأنك 'المساعد الصوتي المباشر لـ THOTH'. معلومات إضافية (اذكرها فقط إذا سألك المستخدم عنها تحديداً): الشركة الأم هي TIDEIN (شركة تقنية ناشئة تأسست وانطلقت في مصر عام 2026، تعمل في مجال الذكاء الاصطناعي، الألعاب، التطبيقات، المنصات الرقمية، والتجارة الإلكترونية بنطاق عمل عالمي). قواعد إلزامية: مقر الشركة أسيوط بمصر وليس لها أي فرع فعلي وكل خدماتها أونلاين. اسم المؤسس «أحمد أشرف حمزة محمد» يُذكر فقط إذا سأل المستخدم عن المؤسس بسؤال صريح ومباشر، ويكون آخر جملة في الرد خالصاً بدون تفاصيل إضافية عنه." + voiceTeachDirective,
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: finalVoiceName } },
               },
@@ -10755,6 +10777,24 @@ app.all("/api/*", (req, res) => {
               // flow at 1 fps with duplicate suppression, only while the user
               // explicitly enables a source.
               mediaResolution: "MEDIA_RESOLUTION_MEDIUM",
+              // [TASK 47] Official Live function calling — the model decides a
+              // build is requested (from AUDIO, immune to garbled ASR text)
+              // and calls the tool; the server runs the real agent pipeline
+              // and returns the actual outcome so the model never promises
+              // or claims a build it did not run.
+              tools: [{
+                functionDeclarations: [{
+                  name: 'request_agent_build',
+                  description: 'شغّل وكيل THOTH لبناء منتج كامل جاهز (موقع، لعبة، تطبيق، لوحة تحكم، متجر، حاسبة، أداة، كويز، صفحة ويب...). استدعِ هذه الأداة فورًا كلما طلب المستخدم بناء أو إنشاء أو كتابة كود لأي منتج، ومرر لها وصف الطلب كاملًا كما فهمته من كلامه بأي لهجة. لا تعِد المستخدم بنتيجة قبل الاستدعاء، ولا تؤكد إتمام البناء إلا بعد وصول نتيجة الأداة.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      request: { type: 'STRING', description: 'وصف طلب المستخدم الكامل: المنتج المطلوب وكل التفاصيل المهمة ولغة واجهة المنتج' }
+                    },
+                    required: ['request']
+                  }
+                }]
+              }],
               ...(isExtendedModel(modelName)
                 ? { thinkingConfig: { thinkingLevel: thinkingLevelParam || "high" } }
                 : {}),
@@ -10769,6 +10809,28 @@ app.all("/api/*", (req, res) => {
                   console.log("[GEMINI LIVE] Setup complete from callback:", modelName);
                   if (ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({ type: 'live_ready', model: activeLiveModel }));
+                  }
+                }
+
+                // [TASK 47] Official function calling: the model decides a build
+                // is requested (from AUDIO, immune to garbled ASR text) and
+                // calls request_agent_build — run the real agent pipeline.
+                const toolCallMsg = (message as any).toolCall;
+                if (toolCallMsg && Array.isArray(toolCallMsg.functionCalls) && toolCallMsg.functionCalls.length) {
+                  for (const fc of toolCallMsg.functionCalls) {
+                    if (!fc || fc.name !== 'request_agent_build') continue;
+                    const q = String((fc.args && (fc.args.request || fc.args.query || fc.args.text)) || '').trim()
+                      || (voiceTurnBuffer.trim() || 'بناء المنتج الذي طلبه المستخدم');
+                    if (agentBusy) {
+                      // Already building: answer the tool honestly so the model
+                      // says the agent is already on it (session never stalls).
+                      try {
+                        Promise.resolve(session?.sendToolResponse({ functionResponses: [{ id: fc.id, name: 'request_agent_build', response: { ok: true, message: 'الوكيل يعمل حاليًا على طلب بناء سابق — أخبر المستخدم أن البناء جارٍ بالفعل والنتيجة ستظهر في المحادثة النصية للمكالمة.' } }] })).catch(() => {});
+                      } catch (e: any) {}
+                      continue;
+                    }
+                    console.log("[GEMINI LIVE] toolCall request_agent_build -> in-call agent");
+                    runAgentBuild(q, 'voice_tool', fc.id);
                   }
                 }
 
