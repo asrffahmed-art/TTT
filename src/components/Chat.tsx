@@ -3000,7 +3000,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       </div>
 
       {/* Floating Prompt Bar */}
-      <div className={`fixed ${isAuth ? 'bottom-[72px] sm:bottom-[76px]' : 'bottom-2 pb-2'} left-0 w-full z-40 bg-gradient-to-t from-[#0d0f17] via-[#0d0f17]/95 to-transparent pt-3 px-3 sm:px-6 pointer-events-none`}>
+      <div className={`thoth-composer-bar fixed ${isAuth ? 'bottom-[72px] sm:bottom-[76px]' : 'bottom-2 pb-2'} left-0 w-full z-40 bg-gradient-to-t from-[#0d0f17] via-[#0d0f17]/95 to-transparent pt-3 px-3 sm:px-6 pointer-events-none`}>
         <div className="w-full max-w-3xl mx-auto pointer-events-auto flex flex-col gap-2">
           
           {/* Integrated AI Mode Pills & New Chat */}

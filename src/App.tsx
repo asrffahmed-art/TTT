@@ -48,6 +48,28 @@ export default function App() {
   const [isDailyBriefingOpen, setIsDailyBriefingOpen] = useState(false);
   const [isKeepModalOpen, setIsKeepModalOpen] = useState(false);
 
+  // [Task 46] Mobile soft-keyboard: keep the chat composer + UI above the keyboard.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv || !vv.addEventListener) return;
+    const doc = document.documentElement;
+    const updateKb = () => {
+      const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      doc.style.setProperty('--kb-overlap', `${overlap}px`);
+      const open = overlap > 80;
+      document.body.classList.toggle('kb-open', open);
+      if (open) window.scrollTo(0, 0);
+    };
+    vv.addEventListener('resize', updateKb);
+    vv.addEventListener('scroll', updateKb);
+    updateKb();
+    return () => {
+      vv.removeEventListener('resize', updateKb);
+      vv.removeEventListener('scroll', updateKb);
+      document.body.classList.remove('kb-open');
+      doc.style.setProperty('--kb-overlap', '0px');
+    };
+  }, []);
   useEffect(() => {
     initSubscriptionPlans();
     const handleArtifactToggle = (e: any) => {

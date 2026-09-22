@@ -11,7 +11,7 @@ export function Navigation({ activeTab, setActiveTab, tabs }: NavigationProps) {
   const theme = useAppTheme();
 
   return (
-    <nav className="fixed bottom-0 w-full z-50 pb-safe bg-[#0f111a]/85 backdrop-blur-2xl border-t border-white/10 shrink-0">
+    <nav className="thoth-bottom-nav fixed bottom-0 w-full z-50 pb-safe bg-[#0f111a]/85 backdrop-blur-2xl border-t border-white/10 shrink-0">
       <div className="flex justify-around items-center h-16 px-3 max-w-xl mx-auto">
         {tabs.map((tab) => {
           const Icon = tab.icon;

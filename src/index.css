@@ -108,3 +108,15 @@
     --color-on-error: #690005;
     --color-tertiary-fixed: #ffdfa0;
 }
+
+/* ---- Task 46: mobile soft-keyboard handling ------------------------------ */
+:root { --kb-overlap: 0px; }
+
+/* iOS-style keyboards do not resize the layout viewport: lift the fixed
+   chat composer above the keyboard and hide the bottom nav while typing
+   (same behaviour as Gemini/ChatGPT mobile web). */
+body.kb-open .thoth-bottom-nav { display: none; }
+body.kb-open .thoth-composer-bar {
+  bottom: var(--kb-overlap) !important;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+}
