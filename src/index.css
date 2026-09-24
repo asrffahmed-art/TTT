@@ -120,3 +120,11 @@ body.kb-open .thoth-composer-bar {
   bottom: var(--kb-overlap) !important;
   padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
 }
+
+/* ---- Task 48: فاصل ناعم بين كل رسالة ورسالة (gradient شفاف، لون ثانوي هادي) ---- */
+.msg-sep {
+  height: 1px;
+  width: 100%;
+  margin: 14px 0 10px;
+  background: linear-gradient(to left, transparent, rgba(255, 255, 255, 0.12), transparent);
+}

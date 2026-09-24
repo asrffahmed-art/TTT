@@ -32,6 +32,8 @@ import { Subscription } from './Subscription';
 import { SearchResultView } from './SearchResultView';
 import { ArtifactViewer } from './ArtifactViewer';
 import { AdPlacement } from './AdPlacement';
+// [TASK 48] صندوق خطوات تنفيذ الرد (خطوات متسلسلة + مؤقّت) — البحث في الويب منفصل تماماً
+import ResponseSteps, { type ResponseStep } from './ResponseSteps';
 import { AudioSummaryPlayer } from './AudioSummaryPlayer';
 import { WebSource, WebImage, Message } from '../types';
 import { useAppTheme } from '../lib/themeService';
@@ -79,6 +81,15 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
 
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // [TASK 48] مؤقّت خطوات الرد: بيشترت من لحظة الإرسال وبيتحدث كل 100ms أثناء التحميل
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const sendStartRef = useRef<number>(0);
+  useEffect(() => {
+    if (!isLoading) { sendStartRef.current = 0; setElapsedMs(0); return; }
+    sendStartRef.current = Date.now();
+    const iv = setInterval(() => setElapsedMs(Date.now() - sendStartRef.current), 100);
+    return () => clearInterval(iv);
+  }, [isLoading]);
   const [shareCopied, setShareCopied] = useState(false);
 
   const handleQuickShare = async () => {
@@ -2201,7 +2212,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           </div>
         )}
 
-        {messages.map((msg) => (
+        {messages.map((msg, mi) => (
           <div key={msg.id} className={`flex flex-col w-full group ${msg.isUser ? 'items-start' : 'items-end'}`}>
             <div className={`flex items-start gap-3 w-full md:max-w-[90%] ${msg.isUser ? 'flex-row-reverse self-start' : 'flex-row self-end'}`}>
               
@@ -2211,7 +2222,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                 className={`flex-1 min-w-0 transition-all ${
                   msg.isUser 
                     ? 'bg-white/[0.08] backdrop-blur-xl text-gray-100 rounded-2xl px-4 py-3 border border-white/10 max-w-[85%] shadow-md' 
-                    : 'bg-transparent text-gray-100 py-1 px-1'
+                    : 'bg-gradient-to-br from-white/[0.055] via-white/[0.03] to-indigo-500/[0.045] backdrop-blur-xl text-gray-100 rounded-2xl px-4 py-3 border border-white/[0.07] shadow-[0_4px_24px_rgba(0,0,0,0.14)]'
                 }`}
               >
                 {/* Header label for AI response */}
@@ -2788,10 +2799,63 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
             {msg.isUser && (
               <span className="text-[10px] text-white/40 mt-1 mr-2">{msg.time}</span>
             )}
+          {mi < messages.length - 1 && (
+            <div className="msg-sep" aria-hidden="true" />
+          )}
           </div>
         ))}
 
-        {isLoading && (
+        {/* [TASK 48] صندوق خطوات الرد الموحّد — لكل الأوضاع ما عدا البحث في
+            الويب (البحث ليه الواجهة الخاصة بيه تحت منفصلة تماماً زي ما هي). */}
+        {isLoading && selectedMode !== 'web_search' && (() => {
+          const lastUser = [...messages].reverse().find(m => m.isUser);
+          const ft: string = (lastUser as any)?.fileType || '';
+          const attachKind = ft.startsWith('audio/') ? 'audio' : ft.startsWith('image/') ? 'image' : (ft ? 'doc' : null);
+          const prepDone = elapsedMs > 900;
+          const attachDone = prepDone && elapsedMs > 3200;
+          // الخطوة الأساسية حسب وضع الطلب (كل ميزة = خطوة منفصلة)
+          const coreByMode: Record<string, { icon: any; label: string; sub: string }> = {
+            fast: { icon: 'write', label: 'كتابة الرد وصياغته', sub: 'صياغة واضحة ومنظمة بأسلوب THOTH' },
+            thinking: { icon: 'think', label: 'تفكير عميق وتحليل المسألة', sub: 'تفكيك خطوة بخطوة وتدقيق البراهين' },
+            learn: { icon: 'learn', label: 'إعداد الدرس والخطة التعليمية', sub: 'شرح وتفاعل ومهام متدرجة' },
+            agent: { icon: 'agent', label: 'الوكيل يبني المنتج كامل', sub: 'بناء كامل — ممكن ياخد من دقيقة لتلات دقايق' },
+            image: { icon: 'image', label: 'رسم وتوليد الصورة', sub: 'هندسة الإضاءة والأبعاد وتناسق الألوان' },
+            audio_summary: { icon: 'audio', label: 'هندسة البودكاست الصوتي', sub: 'تحليل المحتوى وتوليد نبرة طبيعية' },
+          };
+          const core = coreByMode[selectedMode] || coreByMode.fast;
+          const steps: ResponseStep[] = [];
+          steps.push({ key: 'prep', icon: 'sparkle', label: isAr ? 'تحضير الطلب وفهم المطلوب' : 'Preparing your request', status: prepDone ? 'done' : 'active' });
+          if (attachKind) {
+            const attachLabel = attachKind === 'audio'
+              ? 'تحليل وتلخيص الملف الصوتي'
+              : attachKind === 'image'
+                ? 'قراءة وتحليل الصورة المرفقة'
+                : 'قراءة وتحليل الملف المرفق';
+            steps.push({
+              key: 'attach',
+              icon: attachKind === 'audio' ? 'audio' : attachKind === 'image' ? 'image' : 'file',
+              label: isAr ? attachLabel : 'Analyzing attachment',
+              status: attachDone ? 'done' : 'active',
+            });
+          }
+          steps.push({
+            key: 'core',
+            icon: core.icon,
+            label: isAr ? core.label : 'Generating response',
+            sub: isAr ? core.sub : undefined,
+            status: attachKind ? (attachDone ? 'active' : 'pending') : (prepDone ? 'active' : 'pending'),
+          });
+          steps.push({ key: 'format', icon: 'enhance', label: isAr ? 'تنسيق الرد وعرضه' : 'Formatting the reply', status: 'pending' });
+          return (
+            <div className="flex flex-col w-full items-end">
+              <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
+                <ResponseSteps steps={steps} elapsedMs={elapsedMs} title={isAr ? 'THOTH بيشتغل على طلبك' : 'THOTH is working on your request'} />
+              </div>
+            </div>
+          );
+        })()}
+
+        {isLoading && selectedMode === 'web_search' && (
           <div className="flex flex-col w-full items-end">
             <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
               <div className="py-3.5 px-4.5 rounded-2xl bg-white/[0.04] backdrop-blur-xl border border-white/10 flex flex-col gap-2.5 text-white shadow-2xl animate-fade-in min-w-[280px] sm:min-w-[340px]">

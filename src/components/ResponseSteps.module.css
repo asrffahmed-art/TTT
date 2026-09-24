@@ -1,0 +1,155 @@
+/*
+  [TASK 48] ResponseSteps — صندوق خطوات تنفيذ الرد
+  ------------------------------------------------
+  التصميم: ألوان فاتحة وثانوية (secondary) مش عدوانية — خلفية gradient شفافة خفيفة
+  + blur، حدود ناعمة، وفواصل رقيقة. اتجاه RTL بالمصري، ومتجاوب موبايل/ديسكتوب.
+  كل خطوة ليها 3 حالات: pending (نقطة شمع) / active (سبينر) / done (علامة صح).
+*/
+.box {
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(135deg,
+    rgba(255, 255, 255, 0.07) 0%,
+    rgba(148, 163, 184, 0.045) 55%,
+    rgba(99, 102, 241, 0.05) 100%);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 560px;
+  animation: boxIn 0.35s ease both;
+}
+
+@keyframes boxIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* شريط علوي: عنوان + مؤقّت الوقت المنقضي */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  color: rgba(226, 232, 240, 0.95);
+  min-width: 0;
+}
+
+.titleDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #818cf8; /* indigo-400 — لون ثانوي هادي */
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.16);
+  animation: pulseDot 1.6s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* مؤقّت (ثواني/دقايق) — أرقام ثابتة العرض عشان ميعملش قفزات */
+.timer {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: rgba(165, 180, 252, 0.95);
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  direction: ltr; /* الأرقام دايماً LTR حتى داخل RTL */
+  flex-shrink: 0;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* صف الخطوة — انتقالات ناعمة بين الحالات */
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 12px;
+  border-inline-start: 2px solid transparent; /* RTL-aware: يمين في العربي */
+  transition: background 0.25s ease, border-color 0.25s ease, opacity 0.25s ease;
+}
+
+.stepPending { opacity: 0.45; }
+
+.stepActive {
+  background: rgba(255, 255, 255, 0.05);
+  border-inline-start-color: #818cf8;
+  opacity: 1;
+}
+
+.stepDone { opacity: 0.78; }
+
+.iconWrap {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+.iconPending { background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.35); }
+.iconActive  { background: rgba(99, 102, 241, 0.16);  color: #a5b4fc; }
+.iconDone    { background: rgba(16, 185, 129, 0.14);  color: #6ee7b7; }
+
+.texts {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(241, 245, 249, 0.95);
+  line-height: 1.5;
+}
+
+.sub {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 1px;
+  line-height: 1.5;
+}
+
+/* موبايل: نفس التصميم بأبعاد أصغر شوية */
+@media (max-width: 640px) {
+  .box {
+    padding: 12px 12px;
+    border-radius: 16px;
+    max-width: 100%;
+  }
+  .step { padding: 6px 8px; }
+}
