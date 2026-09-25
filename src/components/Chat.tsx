@@ -28,6 +28,8 @@ import {
 } from '../lib/chatSessionManager';
 import { extractStudyToolCommands, applyStudyToolCommands, sanitizeStudyTags } from '../lib/studyToolsService';
 import { compressImage, prepareVideoForUpload, formatBytes, isCompressibleImage, isCompressibleVideo } from '../lib/mediaCompression';
+// [TASK 56] قارئ مستندات أوفيس محلي (Word/Excel/PowerPoint/CSV) — بدون مكتبات خارجية
+import { extractOfficeText, wrapOfficeAttachmentText, officeKindFromName } from '../lib/officeText';
 import { Subscription } from './Subscription';
 import { SearchResultView } from './SearchResultView';
 import { ArtifactViewer } from './ArtifactViewer';
@@ -560,6 +562,9 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     thumbnailUrl?: string;
     isVideo?: boolean;
     isImage?: boolean;
+    isOfficeDoc?: boolean;
+    extractedText?: string;
+    extractedNote?: string;
   }
   const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null);
   const [isUploadingFile, setIsUploadingFile] = useState<boolean>(false);
@@ -579,6 +584,19 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     try {
       const isImg = isCompressibleImage(file);
       const isVid = isCompressibleVideo(file);
+
+      // [TASK 56] دعم أدوات أوفيس: استخراج النص محليًا على جهاز المستخدم — Gemini
+      // مش بيفهم docx/xlsx/pptx في الـ Files API فبنحوله نص يقدر يقراه فعلًا
+      const officeKind = officeKindFromName(file.name, file.type);
+      let officeExtraction: Awaited<ReturnType<typeof extractOfficeText>> | null = null;
+      if (officeKind) {
+        setUploadStatusText(isAr ? 'جاري قراءة المستند محليًا...' : 'Reading document locally...');
+        try {
+          officeExtraction = await extractOfficeText(file);
+        } catch (officeErr) {
+          console.warn('Office text extraction failed:', officeErr);
+        }
+      }
 
       let processedFile: File = file;
       let previewUrl = '';
@@ -648,7 +666,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       let fileRefName: string | undefined = undefined;
       let isUploadedToFileApi = false;
 
-      try {
+      if (!officeKind) try {
         const res = await fetch('/api/files/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -686,7 +704,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         savingsPercentage,
         thumbnailUrl: thumbUrl,
         isVideo: isVid,
-        isImage: isImg
+        isImage: isImg,
+        isOfficeDoc: !!officeKind,
+        extractedText: officeExtraction?.text,
+        extractedNote: officeExtraction?.warning
       });
     } catch (err: any) {
       console.error('File selection error:', err);
@@ -1458,6 +1479,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     let fileUriPayload: string | undefined = undefined;
     let fileRefNamePayload: string | undefined = undefined;
     let isUploadedToFileApiPayload: boolean = false;
+    let officeDocPayload: string | undefined = undefined; // [TASK 56]
     let compressionInfoPayload = undefined;
     let thumbnailUrlPayload = undefined;
 
@@ -1482,6 +1504,17 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       fileRefNamePayload = attachedFile.fileRefName;
       isUploadedToFileApiPayload = attachedFile.isUploadedToFileApi || false;
       thumbnailUrlPayload = attachedFile.thumbnailUrl;
+
+      // [TASK 56] ملفات أوفيس: النص المستخرج محليًا هو اللي هيوصل للموديل —
+      // بنمنع fileUri/inline لأن Gemini بيرفض أنواع MIME بتاعة أوفيس
+      // (ملاحظة: بعد كل الإسنادات فوق عشان مش نتحطّم عليها)
+      if (attachedFile.isOfficeDoc) {
+        officeDocPayload = attachedFile.extractedText
+          ? wrapOfficeAttachmentText(attachedFile.extractedText, attachedFile.name, attachedFile.extractedNote)
+          : `[📄 ملف مرفق: ${attachedFile.name}] (تعذر استخراج نص المستند تلقائيًا على الجهاز)`;
+        fileUriPayload = undefined;
+        isUploadedToFileApiPayload = false;
+      }
       
       if (attachedFile.savingsPercentage && attachedFile.savingsPercentage > 0) {
         compressionInfoPayload = {
@@ -1615,6 +1648,17 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         }
       }
 
+      // [TASK 56] محتوى مستندات أوفيس المستخرج محليًا بيتبعت نص داخل آخر رسالة
+      // من المستخدم — السيرفر والموديل بيقراه عادي بدون fileData غير مدعوم
+      if (officeDocPayload) {
+        for (let i = apiMessages.length - 1; i >= 0; i--) {
+          if (apiMessages[i].role === 'user') {
+            apiMessages[i].text = `${apiMessages[i].text || ''}\n\n${officeDocPayload}`;
+            break;
+          }
+        }
+      }
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1622,8 +1666,8 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           messages: apiMessages, 
           image: attachedFile?.type?.startsWith('image/') ? (attachedFile?.isUploadedToFileApi ? undefined : imagePayload) : imagePayload,
           audio: audioPayload,
-          file: isUploadedToFileApiPayload ? undefined : filePayload,
-          fileUri: fileUriPayload,
+          file: officeDocPayload ? undefined : (isUploadedToFileApiPayload ? undefined : filePayload),
+          fileUri: officeDocPayload ? undefined : fileUriPayload,
           fileRefName: fileRefNamePayload,
           fileName: namePayload,
           fileType: typePayload,
@@ -3817,7 +3861,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
               <input 
                 ref={fileInputRef}
                 type="file" 
-                accept="image/*,video/*,audio/*,application/pdf,text/*,application/json,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.py,.js,.ts,.tsx,.jsx,.cpp,.c,.java,.go,.rs,.sh,.sql,.md" 
+                accept="image/*,video/*,audio/*,application/pdf,text/*,application/json,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.py,.js,.ts,.tsx,.jsx,.cpp,.c,.java,.go,.rs,.sh,.sql,.md,.txt" 
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) {
