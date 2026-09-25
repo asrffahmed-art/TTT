@@ -3714,10 +3714,16 @@ ${sourcesPromptContext}
         secondaryModel = "gemini-3.7-flash";
         tertiaryModel = "gemini-3.6-flash";
       } else if (mode === 'thinking') {
+        // [TASK 51] وضع التفكير العميق لازم يفكر فعلاً: الجيما مش بتفكر
+        // (ومفيش عليها thinkingConfig أصلاً) فكان الرد بيطلع من جيما من غير
+        // أي تفكير مرئي. دلوقتي Gemini 3.7 Flash هو الأساس مع thinkingLevel
+        // HIGH + includeThoughts (أفكار حقيقية بتبث للسهم)، وجيما 31B فضلت
+        // في السلسلة كبديل فوري لو حصل ضغط — سلوك الحصص (thinkingChat)
+        // زي ما هو بالظبط.
         genConfig.thinkingConfig = { thinkingLevel: "HIGH" };
-        primaryModel = "gemma-4-31b-it";
-        secondaryModel = "gemma-4-26b-a4b-it";
-        tertiaryModel = "gemini-3.7-flash";
+        primaryModel = "gemini-3.7-flash";
+        secondaryModel = "gemma-4-31b-it";
+        tertiaryModel = "gemini-3.6-flash";
       } else if (mode === 'fast') {
         primaryModel = "gemma-4-26b-a4b-it";
         secondaryModel = "gemma-4-31b-it";
@@ -3827,7 +3833,7 @@ ${sourcesPromptContext}
           result.modelUsed = mode === 'agent'
             ? "Gemini 3.8 Flash"
             : mode === 'thinking' 
-            ? "Gemma 4 31B" 
+            ? "Gemini 3.7 Flash" 
             : (mode === 'fast' ? "Gemma 4 26B" : "Gemma 4 31B");
         }
         
