@@ -36,6 +36,7 @@ export interface Message {
   modelUsed?: string;
   thought?: string; // [TASK 51] ملخص التفكير الحقيقي من الموديل (لو بعته)
   thinkSec?: number; // [TASK 51] مدة التفكير الفعلية بالثواني
+  analyzedFile?: { name: string; sourceType?: string; action?: string }; // [TASK 52] بيانات تحليل مرفق حقيقي (لو حصل)
   imageUrl?: string;
   videoUrl?: string;
   audioUrl?: string;

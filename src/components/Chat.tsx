@@ -59,7 +59,9 @@ const stripStreamTagsForDisplay = (t: string): string =>
 
 // [TASK 49] قارئ SSE حقيقي: بيقرأ الـ tokens وهي طالعة من السيرفر لحظة بلحظة
 // وبيمرر كل دلتا لـ onDelta، وبرجّع حمولة done النهائية (نفس شكل JSON القديم).
-const consumeChatStream = async (response: Response, onDelta: (delta: string) => void, onThought?: (delta: string) => void): Promise<any> => {
+// [TASK 52] onActivity: أحداث النشاط الحقيقية من السيرفر ({activity}) —
+// بحث في الويب (بمصادره الفعلية) أو تحليل ملف — نفس نمط أحداث thought.
+const consumeChatStream = async (response: Response, onDelta: (delta: string) => void, onThought?: (delta: string) => void, onActivity?: (a: any) => void): Promise<any> => {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -81,6 +83,9 @@ const consumeChatStream = async (response: Response, onDelta: (delta: string) =>
         } else if (evt && typeof evt.thought === 'string' && evt.thought) {
           // [TASK 51] أفكار حقيقية من الموديل (أحداث thought من السيرفر)
           try { onThought?.(evt.thought); } catch {}
+        } else if (evt && evt.activity) {
+          // [TASK 52] نشاط حقيقي (بحث/تحليل ملف) — نفس أسلوب thought
+          try { onActivity?.(evt.activity); } catch {}
         } else if (evt && evt.done) {
           finalPayload = evt.done;
         }
@@ -110,6 +115,113 @@ function ThoughtPill({ thought, thinkSec, isAr }: { thought: string; thinkSec?: 
       <div className={`thoth-thought-panel ${open ? 'thoth-open' : ''}`}>
         <div className="thoth-thought-inner text-[13px] leading-relaxed text-white/50 whitespace-pre-wrap">{thought}</div>
       </div>
+    </div>
+  );
+}
+
+// [TASK 52] كبسولة «حلل «الملف»» بعد اكتمال الرد — نفس سهم ChatGPT:
+// بتظهر لو الرد جه بعد تحليل مرفق حقيقي، وبتفتح على بيانات الملف الفعلية
+// (الاسم/النوع/الإجراء اللي اتنفذ) — كلها بيانات حقيقية بعتها السيرفر.
+function FileAnalysisPill({ name, sourceType, action, isAr }: { name: string; sourceType?: string; action?: string; isAr: boolean }) {
+  const [open, setOpen] = useState(false);
+  const actionLabel: Record<string, string> = isAr ? {
+    general_summary: 'تلخيص شامل',
+    key_points_notes: 'استخراج النقاط الرئيسية',
+    bullet_points: 'استخراج النقاط الرئيسية',
+    table_extraction: 'استخراج الجداول',
+    audio_notes: 'ملاحظات صوتية'
+  } : {
+    general_summary: 'Full summary',
+    key_points_notes: 'Key points extraction',
+    bullet_points: 'Key points extraction',
+    table_extraction: 'Table extraction',
+    audio_notes: 'Audio notes'
+  };
+  const sourceLabel: Record<string, string> = isAr ? {
+    pdf: 'PDF', youtube: 'فيديو يوتيوب', image: 'صورة', audio: 'ملف صوتي', document: 'مستند', text: 'نص'
+  } : {
+    pdf: 'PDF', youtube: 'YouTube video', image: 'Image', audio: 'Audio file', document: 'Document', text: 'Text'
+  };
+  return (
+    <div className="thoth-thought-wrap mb-3">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="flex items-center gap-2 py-1 group"
+      >
+        <ChevronDown className={`thoth-thought-chevron ${open ? 'thoth-open' : ''}`} size={15} strokeWidth={2.5} />
+        <span className="text-[13px] text-white/45 font-medium group-hover:text-white/70 transition-colors">
+          {isAr ? `حلل «${name}»` : `Analyzed «${name}»`}
+        </span>
+      </button>
+      <div className={`thoth-thought-panel ${open ? 'thoth-open' : ''}`}>
+        <div className="thoth-thought-inner text-[13px] leading-relaxed text-white/50">
+          <div className="flex items-center gap-2 mb-1 min-w-0">
+            <FileText className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate" dir="ltr">{name}</span>
+          </div>
+          {sourceType && (
+            <div>{isAr ? 'النوع: ' : 'Type: '}{sourceLabel[sourceType] || sourceType}</div>
+          )}
+          {action && (
+            <div>{isAr ? 'الإجراء: ' : 'Action: '}{actionLabel[action] || (isAr ? 'تحليل' : 'Analysis')}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// [TASK 52] بلوك كود بأسلوب ChatGPT بالظبط: سهم بيطوي الكود ويفتحه + اسم
+// اللغة + زرار نسخ. المحتوى نفسه الحقيقي — بس بقى قابل للطي زي ChatGPT.
+function CollapsibleCodeBlock({ codeString, lang, isAr, theme, children }: { codeString?: string; lang?: string; isAr: boolean; theme: any; children: React.ReactNode }) {
+  const [open, setOpen] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(codeString || '');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+  return (
+    <div className="my-3 rounded-xl overflow-hidden border border-white/15 bg-black/30 backdrop-blur-md shadow-xl text-left" dir="ltr">
+      <div className="bg-white/5 backdrop-blur-md px-4 py-1.5 flex items-center justify-between text-xs text-gray-400 border-b border-white/10">
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={() => setOpen(o => !o)}
+            aria-expanded={open}
+            title={open ? (isAr ? 'طي الكود' : 'Collapse code') : (isAr ? 'فتح الكود' : 'Expand code')}
+            className="p-0.5 rounded hover:bg-white/10 hover:text-white transition-colors"
+          >
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${open ? '' : '-rotate-90'}`} size={14} strokeWidth={2.5} />
+          </button>
+          <span className="font-mono text-[11px] text-gray-300 truncate">{lang || 'code'}</span>
+        </div>
+        <button
+          onClick={copyCode}
+          className="flex items-center gap-1 hover:text-white transition-colors text-[11px] bg-white/10 px-2 py-0.5 rounded shrink-0"
+        >
+          {copied ? (
+            <>
+              <CheckCheck className={`w-3 h-3 ${theme.textAccent}`} />
+              <span className={`${theme.textAccent} font-bold`}>{isAr ? 'تم النسخ' : 'Copied'}</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3 h-3" />
+              <span>{isAr ? 'نسخ الكود' : 'Copy Code'}</span>
+            </>
+          )}
+        </button>
+      </div>
+      {open && (
+        <pre className={`p-4 text-xs font-mono overflow-x-auto ${theme.textAccentBright} leading-relaxed`}>
+          <code>{children}</code>
+        </pre>
+      )}
     </div>
   );
 }
@@ -167,6 +279,12 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
   const [shownThought, setShownThought] = useState('');
   const [thoughtOpen, setThoughtOpen] = useState(false);
   const [thinkSec, setThinkSec] = useState<number | null>(null);
+  // [TASK 52] النشاط الحقيقي المبثوث من السيرفر (بحث في الويب / تحليل ملف)
+  const [streamActivity, setStreamActivity] = useState<any>(null);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const activityUserToggledRef = useRef(false);
+  const streamActivityRef = useRef<any>(null);
+  const pendingFileRef = useRef<{ name: string; type?: string } | null>(null);
   const streamTargetRef = useRef('');
   const thoughtTargetRef = useRef('');
   const streamShownLenRef = useRef(0);
@@ -213,6 +331,14 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     if (streamThought && !streamText) setThoughtOpen(true);
     else if (streamText && streamThought) setThoughtOpen(false);
   }, [streamThought, streamText]);
+  // [TASK 52] سلوك ChatGPT: بانل النشاط بيفتح لوحده أول ما الحدث الحقيقي
+  // يوصل (نتايج البحث/بدء تحليل الملف) ويتقفل أول ما الرد يبدأ — إلا لو
+  // المستخدم ضغط السهم بإيده.
+  useEffect(() => {
+    if (activityUserToggledRef.current) return;
+    if (streamActivity && !streamText) setActivityOpen(true);
+    else if (streamText && streamActivity) setActivityOpen(false);
+  }, [streamActivity, streamText]);
   const [shareCopied, setShareCopied] = useState(false);
 
   const handleQuickShare = async () => {
@@ -1347,6 +1473,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     saveMessageToFirestore(newMsg);
     if (!textToSend) setInput('');
     setAttachedFile(null);
+    // [TASK 52] تسمية صادقة أثناء تحليل المرفق: السطر بيقول بياخد الملف
+    // ويحلله فعلاً على السيرفر قبل أول token
+    pendingFileRef.current = attachedFile ? { name: attachedFile.name, type: attachedFile.type } : null;
+    streamActivityRef.current = null; setStreamActivity(null); setActivityOpen(false); activityUserToggledRef.current = false;
     setIsLoading(true);
     userHasScrolledUpRef.current = false;
     scrollToBottom(true, true);
@@ -1424,6 +1554,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
             lastThoughtRenderRef.current = n1;
             setStreamThought(thoughtTargetRef.current);
           }
+        }, (activity: any) => {
+          // [TASK 52] نشاط حقيقي من السيرفر (بحث في الويب / تحليل ملف)
+          streamActivityRef.current = activity;
+          setStreamActivity(activity);
         });
         streamTargetRef.current = stripStreamTagsForDisplay(acc);
         thoughtTargetRef.current = stripStreamTagsForDisplay(tacc);
@@ -1507,6 +1641,15 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         ...(tacc.trim() ? {
           thought: tacc.trim(),
           thinkSec: thinkDoneMsRef.current ? Math.max(1, Math.round(thinkDoneMsRef.current / 1000)) : 1
+        } : {}),
+        // [TASK 52] لو الرد جه بعد تحليل ملف حقيقي، نحفظ بيانات النشاط
+        // (spread شرطي بقيم معرفة دايماً — مفيش undefined يوصل للتخزين)
+        ...(streamActivityRef.current?.type === 'file_analysis' && streamActivityRef.current?.name ? {
+          analyzedFile: {
+            name: String(streamActivityRef.current.name),
+            sourceType: streamActivityRef.current.sourceType ? String(streamActivityRef.current.sourceType) : undefined,
+            action: streamActivityRef.current.action ? String(streamActivityRef.current.action) : undefined
+          }
         } : {})
       };
       
@@ -1600,6 +1743,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       setStreamText(''); // [TASK 49] تنظيف النص المتدفق في كل الحالات (نجاح/خطأ)
       // [TASK 51] تصفير حالة التفكير والكاتب الناعم للرسالة الجاية
       setStreamThought(''); setShownText(''); setShownThought('');
+      setStreamActivity(null); setActivityOpen(false); streamActivityRef.current = null; pendingFileRef.current = null; activityUserToggledRef.current = false; // [TASK 52] تصفير النشاط
       setThinkSec(null); setThoughtOpen(false);
       thoughtUserToggledRef.current = false;
       thinkDoneMsRef.current = null;
@@ -1678,6 +1822,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
             lastThoughtRenderRef.current = n1;
             setStreamThought(thoughtTargetRef.current);
           }
+        }, (activity: any) => {
+          // [TASK 52] نشاط حقيقي من السيرفر (بحث في الويب / تحليل ملف)
+          streamActivityRef.current = activity;
+          setStreamActivity(activity);
         });
         streamTargetRef.current = stripStreamTagsForDisplay(acc);
         thoughtTargetRef.current = stripStreamTagsForDisplay(tacc);
@@ -1716,6 +1864,15 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         ...(tacc.trim() ? {
           thought: tacc.trim(),
           thinkSec: thinkDoneMsRef.current ? Math.max(1, Math.round(thinkDoneMsRef.current / 1000)) : 1
+        } : {}),
+        // [TASK 52] لو الرد جه بعد تحليل ملف حقيقي، نحفظ بيانات النشاط
+        // (spread شرطي بقيم معرفة دايماً — مفيش undefined يوصل للتخزين)
+        ...(streamActivityRef.current?.type === 'file_analysis' && streamActivityRef.current?.name ? {
+          analyzedFile: {
+            name: String(streamActivityRef.current.name),
+            sourceType: streamActivityRef.current.sourceType ? String(streamActivityRef.current.sourceType) : undefined,
+            action: streamActivityRef.current.action ? String(streamActivityRef.current.action) : undefined
+          }
         } : {})
       };
 
@@ -1737,6 +1894,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       setStreamText(''); // [TASK 49] تنظيف النص المتدفق
       // [TASK 51] تصفير حالة التفكير والكاتب الناعم للرسالة الجاية
       setStreamThought(''); setShownText(''); setShownThought('');
+      setStreamActivity(null); setActivityOpen(false); streamActivityRef.current = null; pendingFileRef.current = null; activityUserToggledRef.current = false; // [TASK 52] تصفير النشاط
       setThinkSec(null); setThoughtOpen(false);
       thoughtUserToggledRef.current = false;
       thinkDoneMsRef.current = null;
@@ -2686,10 +2844,13 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                                     </code>
                                   );
                                 }
+                                // [TASK 52] نفس بلوك ChatGPT (سهم + لغة + نسخ) أثناء البث وفي رسايل الصور
+                                const sc = String(children).replace(/\n$/, '');
+                                const lm = /language-(\w+)/.exec(className || '');
                                 return (
-                                  <pre className="p-3 bg-black/40 rounded-xl text-xs font-mono overflow-x-auto my-2 text-indigo-300">
-                                    <code>{children}</code>
-                                  </pre>
+                                  <CollapsibleCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme}>
+                                    {children}
+                                  </CollapsibleCodeBlock>
                                 );
                               }
                             }}
@@ -2783,6 +2944,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                         تظهر بس لو الموديل بعت أفكار حقيقية وقت التوليد */}
                     {!msg.isUser && msg.thought && (
                       <ThoughtPill thought={msg.thought} thinkSec={msg.thinkSec} isAr={isAr} />
+                    )}
+                    {/* [TASK 52] كبسولة «حلل «الملف»» بعد الرد — زي ChatGPT */}
+                    {!msg.isUser && msg.analyzedFile && msg.analyzedFile.name && (
+                      <FileAnalysisPill name={msg.analyzedFile.name} sourceType={msg.analyzedFile.sourceType} action={msg.analyzedFile.action} isAr={isAr} />
                     )}
                     {!msg.isUser && (msg.audioUrl || msg.audioSummaryInfo) && (
                       <div className="mb-3 w-full">
@@ -2907,31 +3072,11 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                             );
                           }
 
+                          // [TASK 52] بلوك الكود بأسلوب ChatGPT: سهم طي/فتح + لغة + نسخ
                           return (
-                            <div className="my-3 rounded-xl overflow-hidden border border-white/15 bg-black/30 backdrop-blur-md shadow-xl text-left" dir="ltr">
-                              <div className="bg-white/5 backdrop-blur-md px-4 py-1.5 flex items-center justify-between text-xs text-gray-400 border-b border-white/10">
-                                <span className="font-mono text-[11px] text-gray-300">{lang || 'code'}</span>
-                                <button
-                                  onClick={() => handleCopyCode(codeString, codeKey)}
-                                  className="flex items-center gap-1 hover:text-white transition-colors text-[11px] bg-white/10 px-2 py-0.5 rounded"
-                                >
-                                  {copiedCodeIndex === codeKey ? (
-                                    <>
-                                      <CheckCheck className={`w-3 h-3 ${theme.textAccent}`} />
-                                      <span className={`${theme.textAccent} font-bold`}>{isAr ? 'تم النسخ' : 'Copied'}</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Copy className="w-3 h-3" />
-                                      <span>{isAr ? 'نسخ الكود' : 'Copy Code'}</span>
-                                    </>
-                                  )}
-                                </button>
-                              </div>
-                              <pre className={`p-4 text-xs font-mono overflow-x-auto ${theme.textAccentBright} leading-relaxed`}>
-                                <code>{children}</code>
-                              </pre>
-                            </div>
+                            <CollapsibleCodeBlock codeString={codeString} lang={lang} isAr={isAr} theme={theme}>
+                              {children}
+                            </CollapsibleCodeBlock>
                           );
                         }
                       }}
@@ -3038,15 +3183,18 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           </div>
         ))}
 
-        {/* [TASK 49] الحالة الحقيقية بأسلوب ChatGPT: سطر هادي واحد (بدون أي
-            صندوق) بيوضح الشغل الفعلي اللي حاصل على السيرفر دلوقتي + الوقت
+        {/* [TASK 49/52] الحالة الحقيقية بأسلوب ChatGPT: سطر هادي واحد (بدون
+            أي صندوق) بيوضح الشغل الفعلي اللي حاصل على السيرفر دلوقتي + الوقت
             الحقيقي المنقضي. وأول ما أول token حقيقي يوصل من السيرفر، النص
-            يظهر مكانه وهو بيتكتب live حرف بحرف. مفيش أي خطوات مؤدّعة — و
-            البحث في الويب ليه واجهته الخاصة تحت منفصلة تماماً زي ما هي. */}
-        {isLoading && selectedMode !== 'web_search' && (() => {
+            يظهر مكانه وهو بيتكتب live حرف بحرف. مفيش أي خطوات مؤدّعة.
+            [TASK 52] وضع البحث في الويب بقى هنا برضه بنفس النمط الموحد:
+            لمعة «بيبحث في الويب…» + كبسولة النشاط الحقيقية بالمصادر —
+            والبوكس الاستوديو القديم اتشال خالص. */}
+        {isLoading && (() => {
           // تسمية صادقة لكل وضع = الشغل الفعلي اللي بيحصل في الباك إند في نفس اللحظة
           const realStatusByMode: Record<string, string> = {
             fast: isAr ? 'بيكتب الرد…' : 'Writing the reply…',
+            web_search: isAr ? 'بيبحث في الويب…' : 'Searching the web…',
             thinking: isAr ? 'بيفكر بعمق…' : 'Thinking deeply…',
             learn: isAr ? 'بيجهّز درسك…' : 'Preparing your lesson…',
             agent: isAr ? 'الوكيل بينفذ مهمتك…' : 'Agent is working…',
@@ -3054,6 +3202,12 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
             audio_summary: isAr ? 'بجهّز الملخص الصوتي…' : 'Preparing the audio summary…',
           };
           const realStatus = realStatusByMode[selectedMode] || (isAr ? 'بيكتب الرد…' : 'Writing the reply…');
+          // [TASK 52] لو فيه مرفق حقيقي مع الرسالة، السطر بيقول إنه بياخد
+          // الملف ويحلله فعلاً (بيحصل على السيرفر قبل أول token)
+          const pf = pendingFileRef.current;
+          const effectiveStatus = pf
+            ? (isAr ? `بيقرأ ويحلل «${pf.name}»…` : `Reading & analyzing «${pf.name}»…`)
+            : realStatus;
           const elapsedSec = Math.floor(elapsedMs / 1000);
           // صيغة الوقت الحقيقي: ثواني تحت الدقيقة، دقيقة:ثانية فوقها (الاتجاه LTR عشان الأرقام)
           const elapsedLabel = elapsedSec < 60
@@ -3062,12 +3216,78 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           const displayStreamText = shownText; // [TASK 51] الكشف الناعم (متكيف مع إيقاع الشنكات)
           const hasThought = !!streamThought;
           const hasAnswer = !!displayStreamText;
+          const hasActivity = !!streamActivity; // [TASK 52]
           return (
             <div className="flex flex-col w-full items-end">
               <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
                 <div className="flex-1 min-w-0 py-1 px-1">
-                  {(hasThought || hasAnswer) ? (
+                  {(hasActivity || hasThought || hasAnswer) ? (
                     <>
+                      {/* [TASK 52] كبسولة النشاط الحقيقي زي ChatGPT بالظبط:
+                          بحث في الويب (بيعرض المصادر الفعلية اللي رجعت من
+                          Tavily/Grounding) أو تحليل ملف (بيانات الملف الحقيقية)
+                          — سهم بيلف، بيفتح لوحده أثناء الشغل ويتقفل أول ما
+                          الرد يبدأ، ومفيش أي محتوى مؤدّع. */}
+                      {hasActivity && (() => {
+                        const a = streamActivity;
+                        const isSearch = a?.type === 'search';
+                        return (
+                          <div className="thoth-thought-wrap">
+                            <button
+                              type="button"
+                              onClick={() => { activityUserToggledRef.current = true; setActivityOpen(o => !o); }}
+                              aria-expanded={activityOpen}
+                              className="thoth-status-line flex items-center gap-2 py-1.5 group"
+                            >
+                              <ChevronDown className={`thoth-thought-chevron ${activityOpen ? 'thoth-open' : ''}`} size={16} strokeWidth={2.5} />
+                              {hasAnswer ? (
+                                <span className="text-[13px] text-white/45 font-medium group-hover:text-white/70 transition-colors">
+                                  {isSearch
+                                    ? (isAr ? `بحث في الويب${a?.count ? ` · ${a.count} مصادر` : ''}` : `Searched the web${a?.count ? ` · ${a.count} sources` : ''}`)
+                                    : (isAr ? `حلل «${a?.name || 'الملف'}»` : `Analyzed «${a?.name || 'file'}»`)}
+                                </span>
+                              ) : (
+                                <>
+                                  <span className="thoth-status-shimmer text-[15px] font-medium">
+                                    {isSearch ? (isAr ? 'بيبحث في الويب…' : 'Searching the web…') : (isAr ? `بيحلل «${a?.name || 'الملف'}»…` : `Analyzing «${a?.name || 'file'}»…`)}
+                                  </span>
+                                  <span className="text-[11px] text-white/25 tabular-nums" dir="ltr">· {elapsedLabel}</span>
+                                </>
+                              )}
+                            </button>
+                            <div className={`thoth-thought-panel ${activityOpen ? 'thoth-open' : ''}`}>
+                              <div className="thoth-thought-inner text-[13px] leading-relaxed text-white/50">
+                                {isSearch ? (
+                                  <>
+                                    {a?.query && (
+                                      <div className="mb-1.5">
+                                        {isAr ? 'البحث عن: ' : 'Query: '}
+                                        <span className="text-white/70">{a.query}</span>
+                                      </div>
+                                    )}
+                                    {Array.isArray(a?.sources) && a.sources.length > 0 && (
+                                      <div className="flex flex-col gap-1">
+                                        {a.sources.map((s: any, i: number) => (
+                                          <div key={i} className="flex items-center gap-2 min-w-0">
+                                            <Globe className="w-3 h-3 shrink-0 text-white/30" />
+                                            <span className="font-mono text-[11px] text-white/40 truncate shrink-0" dir="ltr">{s?.domain}</span>
+                                            <span className="text-[11px] text-white/50 truncate">{s?.title}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <div className="flex items-center gap-2">
+                                    <FileText className="w-3.5 h-3.5 shrink-0" />
+                                    <span className="truncate" dir="ltr">{a?.name}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                       {/* [TASK 51] صف التفكير بأسلوب ChatGPT بالظبط: سهم قابل
                           للدوران + لمعة اسم الإجراء الحقيقي أثناء التفكير، وبعد
                           أول دلتا رد بيتحول لـ«فكر لمدة N ث» — والمحتوى اللي
@@ -3088,7 +3308,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                               </span>
                             ) : (
                               <>
-                                <span className="thoth-status-shimmer text-[15px] font-medium">{realStatus}</span>
+                                <span className="thoth-status-shimmer text-[15px] font-medium">{effectiveStatus}</span>
                                 <span className="text-[11px] text-white/25 tabular-nums" dir="ltr">· {elapsedLabel}</span>
                               </>
                             )}
@@ -3112,10 +3332,13 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                                     </code>
                                   );
                                 }
+                                // [TASK 52] نفس بلوك ChatGPT (سهم + لغة + نسخ) أثناء البث وفي رسايل الصور
+                                const sc = String(children).replace(/\n$/, '');
+                                const lm = /language-(\w+)/.exec(className || '');
                                 return (
-                                  <pre className="p-3 bg-black/40 rounded-xl text-xs font-mono overflow-x-auto my-2 text-indigo-300">
-                                    <code>{children}</code>
-                                  </pre>
+                                  <CollapsibleCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme}>
+                                    {children}
+                                  </CollapsibleCodeBlock>
                                 );
                               }
                             }}
@@ -3134,7 +3357,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                        الحقيقي بخط خفيف جداً. أول ما أول token حقيقي يوصل
                        السطر بيتبدل بنص live بنفس النعومة. */
                     <div className="thoth-status-line flex items-center gap-2.5 py-1.5" role="status" aria-live="polite">
-                      <span className="thoth-status-shimmer text-[15px] font-medium">{realStatus}</span>
+                      <span className="thoth-status-shimmer text-[15px] font-medium">{effectiveStatus}</span>
                       <span className="text-[11px] text-white/25 tabular-nums" dir="ltr">· {elapsedLabel}</span>
                     </div>
                   )}
@@ -3144,214 +3367,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           );
         })()}
 
-        {/* [TASK 50] إصلاح ريجركشن Task 49: البوكس القديم كان اتفتح لكل
-            الأوضاع بالغلط فكان بيظهر كمستطيل زايد تحت سطر الحالة. اتحصر تاني
-            في وضع البحث في الويب بس — الفصل الهيكلي الأصلي زي ما هو. */}
-        {isLoading && selectedMode === 'web_search' && (
-          <div className="flex flex-col w-full items-end">
-            <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
-              <div className="py-3.5 px-4.5 rounded-2xl bg-white/[0.04] backdrop-blur-xl border border-white/10 flex flex-col gap-2.5 text-white shadow-2xl animate-fade-in min-w-[280px] sm:min-w-[340px]">
-                
-                {/* 1. Image Generation Animation */}
-                {selectedMode === 'image' ? (
-                  <div className="flex flex-col gap-2.5">
-                    <div className="flex items-center justify-between text-xs font-extrabold text-pink-400 border-b border-white/10 pb-2">
-                      <span className="flex items-center gap-2">
-                        <Sparkles className="w-4 h-4 text-pink-400 animate-spin" />
-                        {isAr ? 'استوديو توليد الصور الفنية (THOTH)' : 'AI Art & Image Studio (THOTH)'}
-                      </span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-pink-500/15 text-pink-300 font-bold border border-pink-500/25">
-                        1024x1024 HD
-                      </span>
-                    </div>
-
-                    <div className="relative flex items-center justify-center p-4 bg-white/[0.03] backdrop-blur-md rounded-xl border border-white/10 overflow-hidden">
-                      {/* Animated visual canvas sweep */}
-                      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
-                      <div className="flex items-center gap-3 relative z-10">
-                        <div className="relative">
-                          <ImageIcon className="w-7 h-7 text-pink-400 animate-pulse" />
-                          <Sparkles className="w-3.5 h-3.5 text-amber-300 absolute -top-1 -right-1 animate-bounce" />
-                        </div>
-                        <div className="flex flex-col">
-                          <span className="text-xs font-bold text-white">
-                            {isAr ? 'جاري رسم وتوليد تفاصيل الصورة...' : 'Painting and rendering image details...'}
-                          </span>
-                          <span className="text-[10px] text-pink-300/80">
-                            {isAr ? 'هندسة الإضاءة، الأبعاد، وتناسق الألوان الفنية' : 'Engineering lighting, perspective, and color harmony'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : 
-
-                /* 2. Audio Summary & Podcast Studio Animation */
-                selectedMode === 'audio_summary' ? (
-                  <div className="flex flex-col gap-2.5">
-                    <div className="flex items-center justify-between text-xs font-extrabold text-emerald-400 border-b border-white/10 pb-2">
-                      <span className="flex items-center gap-2">
-                        <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-                        {isAr ? 'استوديو البودكاست والملخص الصوتي (THOTH Audio)' : 'THOTH Voice & Podcast Studio'}
-                      </span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-bold border border-emerald-500/25">
-                        HD Studio
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between p-3.5 bg-white/[0.03] backdrop-blur-md rounded-xl border border-white/10">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 rounded-xl bg-emerald-500/15 border border-emerald-500/25">
-                          <Volume2 className="w-5 h-5 text-emerald-400 animate-bounce" />
-                        </div>
-                        <div className="flex flex-col">
-                          <span className="text-xs font-bold text-white">
-                            {isAr ? 'جاري إعداد وهندسة البودكاست الصوتي...' : 'Engineering smart audio podcast...'}
-                          </span>
-                          <span className="text-[10px] text-emerald-300/80">
-                            {isAr ? 'تحليل المحتوى وهندسة النبرة الصوتية الواقعية' : 'Analyzing content & generating natural human voice'}
-                          </span>
-                          {slowAudioHint && (
-                            <span className="text-[10px] text-amber-300/90 font-medium mt-0.5">
-                              {isAr ? '⏳ المعالجة ممكن تاخد من دقيقة لتلات دقايق في أوقات الضغط العالي — ميزتك بتحفظ عادي' : '⏳ Processing may take 1–3 minutes under heavy load — your quota is safe'}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Equalizer Frequency Waves */}
-                      <div className="flex items-end gap-1 h-6 px-2">
-                        <span className="w-1 bg-emerald-400 rounded-full animate-[pulse_0.6s_ease-in-out_infinite] h-3" />
-                        <span className="w-1 bg-teal-400 rounded-full animate-[pulse_0.9s_ease-in-out_infinite] h-5" />
-                        <span className="w-1 bg-emerald-300 rounded-full animate-[pulse_0.5s_ease-in-out_infinite] h-4" />
-                        <span className="w-1 bg-teal-300 rounded-full animate-[pulse_0.8s_ease-in-out_infinite] h-2.5" />
-                        <span className="w-1 bg-emerald-400 rounded-full animate-[pulse_0.7s_ease-in-out_infinite] h-6" />
-                      </div>
-                    </div>
-                  </div>
-                ) : 
-
-                /* 3. Deep Thinking Reasoning Animation */
-                selectedMode === 'thinking' ? (
-                  <div className="flex flex-col gap-2.5">
-                    <div className="flex items-center justify-between text-xs font-extrabold text-purple-400 border-b border-white/10 pb-2">
-                      <span className="flex items-center gap-2">
-                        <Brain className="w-4 h-4 text-purple-400 animate-pulse" />
-                        {isAr ? 'التفكير العميق والتحليل المنطقي (Deep Reasoning)' : 'Deep Reasoning & Logic Engine'}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-3 p-3 bg-white/[0.03] backdrop-blur-md rounded-xl border border-white/10">
-                      <Loader2 className="w-5 h-5 animate-spin text-purple-400 shrink-0" />
-                      <div className="flex flex-col">
-                        <span className="text-xs font-bold text-white">
-                          {isAr ? 'جاري تفكيك المسألة والتحليل خطوة بخطوة...' : 'Analyzing problem step-by-step...'}
-                        </span>
-                        <span className="text-[10px] text-purple-300/80">
-                          {isAr ? 'استدعاء المعارف المتقدمة وتدقيق البراهين' : 'Formulating structured reasoning and verification'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ) : 
-
-                /* 4. Live Web Search Animation */
-                selectedMode === 'web_search' ? (
-                  <div className="flex flex-col gap-2 min-w-[260px] sm:min-w-[320px]">
-                    <div className="flex items-center justify-between text-xs font-bold text-blue-400 border-b border-white/10 pb-1.5">
-                      <span className="flex items-center gap-1.5">
-                        <Globe className="w-3.5 h-3.5 text-blue-400 animate-spin" />
-                        {isAr ? 'البحث المباشر في الويب عبر THOTH' : 'Live Web Search via THOTH'}
-                      </span>
-                    </div>
-                    
-                    <div className="flex flex-col gap-1.5 pt-0.5">
-                      {searchSteps.map((step, idx) => {
-                        const isCurrent = searchProgressStep === idx;
-                        const isPassed = searchProgressStep > idx;
-                        const StepIcon = step.icon;
-
-                        return (
-                          <div
-                            key={idx}
-                            className={`flex items-center gap-2.5 text-xs py-1 px-2 rounded-lg transition-all ${
-                              isCurrent
-                                ? `${theme.badgeClass} font-bold border`
-                                : isPassed
-                                ? 'text-white/60 line-through opacity-70'
-                                : 'text-white/30'
-                            }`}
-                          >
-                            {isCurrent ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400 shrink-0" />
-                            ) : isPassed ? (
-                              <CheckCheck className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                            ) : (
-                              <StepIcon className="w-3.5 h-3.5 text-white/30 shrink-0" />
-                            )}
-                            <span>{step.label}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : 
-
-                /* 4.5 Learn Mode Animation */
-                selectedMode === 'learn' ? (
-                  <div className="flex items-center gap-3 py-1">
-                    <div className="p-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
-                      <GraduationCap className="w-4 h-4 text-emerald-400 animate-pulse" />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-semibold text-emerald-300 animate-pulse">
-                        {isAr ? 'THOTH بيجهز درسك وخطته التعليمية...' : 'THOTH is preparing your lesson & plan...'}
-                      </span>
-                      <span className="text-[10px] text-white/40">
-                        {isAr ? 'وضع التعلم — شرح وتفاعل ومهام' : 'Learn mode — teach, interact, tasks'}
-                      </span>
-                    </div>
-                  </div>
-                ) :
-
-                /* 4.8 Agent Mode Animation (Task 37) */
-                selectedMode === 'agent' ? (
-                  <div className="flex items-center gap-3 py-1">
-                    <div className="p-1.5 rounded-lg bg-amber-500/20 border border-amber-500/30">
-                      <Bot className="w-4 h-4 text-amber-400 animate-pulse" />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-semibold text-amber-300 animate-pulse">
-                        {isAr ? 'الوكيل الذكي بيحلل طلبك ويبنيه كامل...' : 'Agent is analyzing & building your request...'}
-                      </span>
-                      <span className="text-[10px] text-white/40">
-                        {isAr ? 'وضع الوكيل — بيبنيلك منتج كامل جاهز (ممكن ياخد من دقيقة لتلات دقايق)' : 'Agent mode — building a full product (1–3 min)'}
-                      </span>
-                    </div>
-                  </div>
-                ) :
-
-                /* 5. Fast Response Animation */
-                (
-                  <div className="flex items-center gap-3 py-1">
-                    <div className="p-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/30">
-                      <Zap className={`w-4 h-4 ${theme.textAccent} animate-pulse`} />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className={`text-xs font-semibold ${theme.textAccentBright} animate-pulse`}>
-                        {isAr ? 'THOTH يقوم بالصياغة والرد السريع...' : 'THOTH is generating response...'}
-                      </span>
-                      <span className="text-[10px] text-white/40">
-                        {isAr ? 'معالجة فورية للطلب' : 'Instant processing'}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-              </div>
-            </div>
-          </div>
-        )}
+        {/* [TASK 52] البوكس الاستوديو القديم للبحث اتشال خالص — وضع البحث
+            دلوقتي بيستخدم نفس سطر ChatGPT الموحد اللي فوق: لمعة «بيبحث في
+            الويب…» + كبسولة النشاط الحقيقية بالمصادر + الرد بيتدفق live تحتها.
+            ده اللي كان بيتنادى «المستطيل» ومالوش أي وجود دلوقتي في أي وضع. */}
         <div ref={messagesEndRef} />
       </div>
 

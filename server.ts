@@ -3165,6 +3165,55 @@ User request: "${userQuery}"` }] }],
       }
       // --- END IMAGE GENERATION WORKFLOW ---
 
+      // [TASK 52] نفس أسلوب الـ lazy SSE بتاع Task 49/51، بس اتنقل هنا لفوق
+      // عشان فرع تحليل المستندات وفرع البحث في الويب يشاركوا نفس علم
+      // sseStarted — فلو حصل fall-through بعد ما النشاط بدأ، المسار الرئيسي
+      // يكمّل SSE صح من غير ما يحاول يرجع JSON بعد ما الهيدرز اتبعتت.
+      // القاعدة الذهبية زي ما هي: مفيش أي هيدر بيتبعت غير مع أول حدث حقيقي
+      // (نشاط/فكرة/دلتا) — وكل مسارات الحصص والأخطاء قبله بتفضل JSON عادي.
+      let sseStarted = false;
+      const sseEnsure = () => {
+        if (!sseStarted) {
+          sseStarted = true;
+          res.status(200);
+          res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, no-transform');
+          res.setHeader('Connection', 'keep-alive');
+          res.setHeader('X-Accel-Buffering', 'no');
+          (res as any).flushHeaders?.();
+          res.write(`data: ${JSON.stringify({ started: true })}\n\n`);
+        }
+      };
+      const sseWrite = (obj: any) => {
+        try {
+          sseEnsure();
+          res.write(`data: ${JSON.stringify(obj)}\n\n`);
+        } catch (sseErr) {
+          console.warn("SSE write failed:", (sseErr as any)?.message || sseErr);
+        }
+      };
+      const streamOnThought = wantsStream ? (delta: string) => {
+        sseWrite({ thought: delta });
+      } : undefined;
+      const streamOnChunk = wantsStream ? (delta: string) => {
+        sseWrite({ delta });
+      } : undefined;
+      // [TASK 52] بث أنشطة حقيقية (بحث في الويب / تحليل ملف) زي ChatGPT:
+      // الكلاينت بيعرضها كبسولة بسهم تفتح على بيانات حقيقية من السيرفر.
+      const streamOnActivity = wantsStream ? (activity: any) => {
+        sseWrite({ activity });
+      } : undefined;
+      // [TASK 52] نهاية موحدة: لو SSE بدأ (أي حدث اتبعت) النتيجة تتمة done،
+      // وإلا رد JSON كلاسيكي زي ما هو — كل المستدعيات (مستندات/بحث) تستخدمه.
+      const finishWithSseOrJson = (payload: any) => {
+        if (sseStarted) {
+          sseWrite({ done: payload });
+          try { res.end(); } catch {}
+        } else {
+          res.json(payload);
+        }
+      };
+
       // --- THOTH INTELLIGENT AUDIO SUMMARY / AUDIO NOTES & DOCUMENT ORCHESTRATION ---
       const conversationYtInfo = findYouTubeInfoInConversation(validMessages, userQuery);
       const hasMediaOrDoc = !!(
@@ -3432,6 +3481,16 @@ User request: "${userQuery}"` }] }],
             }
           }
 
+          // [TASK 52] نشاط حقيقي زي ChatGPT: أول ما التحليل النصي يبدأ فعلاً
+          // (بعد فحوصات الحصص والتوضيح) نبعث حدث activity واحد ببيانات الملف
+          // — الكلاينت بيعرض «بيحلل «الاسم»» بسهم يفتح على بيانات الملف.
+          streamOnActivity?.({
+            type: 'file_analysis',
+            name: sourceTitle,
+            sourceType: intent.sourceType || 'document',
+            action: intent.intentType || 'general_summary'
+          });
+
           const { prompt: specializedPrompt, systemInstruction } = buildSpecializedPromptAndSystemInstruction(
             intent,
             userQuery,
@@ -3496,7 +3555,7 @@ User request: "${userQuery}"` }] }],
             await recordSuccessfulDailyTextSummaryCredit(userId, clientIp);
           }
 
-          return res.json({
+          return finishWithSseOrJson({
             text: rawContent,
             modelUsed: understandingRes.modelUsed
           });
@@ -3566,6 +3625,16 @@ User request: "${userQuery}"` }] }],
                 primarySources = allSources.slice(0, 4);
                 relatedSources = allSources.slice(4, 8);
 
+                // [TASK 52] نتائج البحث الحقيقية وصلت من Tavily — بنبثها
+                // كحدث activity زي «Searched the web» بتاع ChatGPT بالظبط:
+                // الكلاينت بيعرض «بحث في الويب · N مصادر» بسهم يفتح المصادر.
+                streamOnActivity?.({
+                  type: 'search',
+                  query: userQuery,
+                  count: allSources.length,
+                  sources: allSources.slice(0, 8).map((s: any) => ({ title: s.title, domain: s.domain }))
+                });
+
                 processedImages = rawImages.map((imgItem: any) => {
                   let imgUrl = "";
                   let description = userQuery;
@@ -3621,11 +3690,12 @@ ${sourcesPromptContext}
 
                 for (const m of [primaryModel, secondaryModel, tertiaryModel]) {
                   try {
+                    // [TASK 52] رد البحث نفسه بيتدفق live زي باقي الأوضاع
                     const aiResponse = await generateContentWithTracking({
                       model: m,
                       contents: [{ role: 'user', parts: [{ text: promptForAi }] }],
                       config: searchGenConfig
-                    });
+                    }, undefined, undefined, undefined, wantsStream ? { onChunk: streamOnChunk } : undefined);
 
                     if (aiResponse && aiResponse.text) {
                       aiResultText = aiResponse.text;
@@ -3648,6 +3718,9 @@ ${sourcesPromptContext}
         // Fallback to Google Search Grounding with Gemini if Tavily was not available or returned no results
         if (!aiResultText) {
           try {
+            // [TASK 52] المسار البديل (Google Grounding): نفس حدث النشاط
+            // (من غير عدد مصادر لحد ما الرد يجي) + بث الرد live.
+            streamOnActivity?.({ type: 'search', query: userQuery });
             const googleSearchRes = await generateContentWithTracking({
               model: "gemini-3.1-flash-lite",
               contents: [{ role: 'user', parts: [{ text: userQuery }] }],
@@ -3655,7 +3728,7 @@ ${sourcesPromptContext}
                 systemInstruction: "أنت THOTH، المساعد الذكي لمنصة THOTH. أجب بنفس لغة المستخدم بأسلوب راقٍ وموثوق ومفصل بناءً على أحدث معلومات الويب والبحث المباشر. لا تذكر اسم أي شركة أو نموذج آخر. قواعد الشركة الإلزامية: مقرها أسيوط بمصر وليس لها أي فرع فعلي وكل خدماتها أونلاين. اسم المؤسس «أحمد أشرف حمزة محمد» لا يُذكر إلا بسؤال صريح ومباشر عن المؤسس، ويكون آخر جملة في الرد خالصاً بدون تفاصيل أخرى.",
                 tools: [{ googleSearch: {} }]
               }
-            });
+            }, undefined, undefined, undefined, wantsStream ? { onChunk: streamOnChunk } : undefined);
 
             if (googleSearchRes && googleSearchRes.text) {
               aiResultText = googleSearchRes.text;
@@ -3698,7 +3771,8 @@ ${sourcesPromptContext}
           aiResultText = "عذراً، تعذر إجراء البحث في الويب حالياً. يرجى التأكد من مفتاح البحث أو إعادة المحاولة لاحقاً.";
         }
 
-        return res.json({
+        // [TASK 52] النتيجة النهائية: done عبر SSE لو البدأ، وإلا JSON زي ما هو
+        return finishWithSseOrJson({
           text: aiResultText,
           modelUsed: modelUsed,
           sources: primarySources,
@@ -3780,47 +3854,6 @@ ${sourcesPromptContext}
         }
         throw lastError;
       };
-
-      // [TASK 49] Lazy SSE plumbing: headers go out with the FIRST real
-      // delta — until then every error/limit path can still answer with JSON.
-      let sseStarted = false;
-      // [TASK 51] بث أفكار النموذج الحقيقية كأحداث SSE منفصلة ({thought}).
-      // نفس الـ laziness: الهيدر بيتبعت مع أول حدث حقيقي (فكرة أو دلتا) —
-      // كل مسارات الأخطاء والحصص بتفضل ترجع JSON عادي زي ما هي.
-      const streamOnThought = wantsStream ? (delta: string) => {
-        try {
-          if (!sseStarted) {
-            sseStarted = true;
-            res.status(200);
-            res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-            res.setHeader('Cache-Control', 'no-cache, no-transform');
-            res.setHeader('Connection', 'keep-alive');
-            res.setHeader('X-Accel-Buffering', 'no');
-            (res as any).flushHeaders?.();
-            res.write(`data: ${JSON.stringify({ started: true })}\n\n`);
-          }
-          res.write(`data: ${JSON.stringify({ thought: delta })}\n\n`);
-        } catch (sseErr) {
-          console.warn("SSE write failed:", (sseErr as any)?.message || sseErr);
-        }
-      } : undefined;
-      const streamOnChunk = wantsStream ? (delta: string) => {
-        try {
-          if (!sseStarted) {
-            sseStarted = true;
-            res.status(200);
-            res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-            res.setHeader('Cache-Control', 'no-cache, no-transform');
-            res.setHeader('Connection', 'keep-alive');
-            res.setHeader('X-Accel-Buffering', 'no');
-            (res as any).flushHeaders?.();
-            res.write(`data: ${JSON.stringify({ started: true })}\n\n`);
-          }
-          res.write(`data: ${JSON.stringify({ delta })}\n\n`);
-        } catch (sseErr) {
-          console.warn("SSE write failed:", (sseErr as any)?.message || sseErr);
-        }
-      } : undefined;
 
       try {
         // [Task 38] Agent mode must NOT fall to a small Gemma while any
