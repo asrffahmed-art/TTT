@@ -961,7 +961,7 @@ async function generateContentWithTracking(
   userId: string | null | undefined = "guest",
   service: string = "General",
   userPlan: string = "Free",
-  opts?: { onChunk?: (delta: string) => void }
+  opts?: { onChunk?: (delta: string) => void; onThought?: (delta: string) => void; withThoughts?: boolean }
 ) {
   const start = Date.now();
   let success = false;
@@ -1032,15 +1032,39 @@ async function generateContentWithTracking(
         // [TASK 49] Real token streaming when a chunk callback is provided:
         // identical attemptParams — only the transport differs.
         if (opts?.onChunk) {
+          // [TASK 51] طلب ملخص التفكير الحقيقي: بيتضاف للـ thinkingConfig
+          // الموجود أصلاً (وضع التفكير) — ومش بيتffect على الجيما خالص لأن
+          // الحارس اللي فوق بيشيل thinkingConfig منها قبل ما نوصل هنا.
+          if (opts.withThoughts && attemptParams.config?.thinkingConfig) {
+            attemptParams.config = {
+              ...attemptParams.config,
+              thinkingConfig: { ...attemptParams.config.thinkingConfig, includeThoughts: true }
+            };
+          }
           const stream = await ai.models.generateContentStream(attemptParams);
           let streamedText = "";
           let lastUsage: any = undefined;
           try {
             for await (const chunk of stream as any) {
-              const t = (chunk as any)?.text || "";
-              if (t) {
-                streamedText += t;
-                try { opts.onChunk(t); } catch {}
+              // [TASK 51] فصل أفكار النموذج عن نص الرد: الأجزاء المعلمة
+              // thought=true بتتبعت عبر onThought ومش بتدخل في نص الرد
+              // نهائياً — وباقي الأجزاء بتتبعت كدلتا عادية زي Task 49.
+              const parts = (chunk as any)?.candidates?.[0]?.content?.parts;
+              if (Array.isArray(parts) && parts.length > 0) {
+                for (const p of parts) {
+                  if (p?.thought && typeof p.text === 'string' && p.text) {
+                    try { opts.onThought?.(p.text); } catch {}
+                  } else if (typeof p?.text === 'string' && p.text) {
+                    streamedText += p.text;
+                    try { opts.onChunk?.(p.text); } catch {}
+                  }
+                }
+              } else {
+                const t = (chunk as any)?.text || "";
+                if (t) {
+                  streamedText += t;
+                  try { opts.onChunk(t); } catch {}
+                }
               }
               if ((chunk as any)?.usageMetadata) lastUsage = (chunk as any).usageMetadata;
             }
@@ -3707,7 +3731,7 @@ ${sourcesPromptContext}
 
       // Helper function to try generating content with fallback models and retry on 429 / 503
       // [TASK 49] streamOpts passthrough — the fallback chain itself is untouched.
-      const tryGenerate = async (models: string[], streamOpts?: { onChunk?: (delta: string) => void }) => {
+      const tryGenerate = async (models: string[], streamOpts?: { onChunk?: (delta: string) => void; onThought?: (delta: string) => void; withThoughts?: boolean }) => {
         let lastError: any = null;
         // Prioritize Gemma 4 26B as the immediate limit fallback
         const candidateModelList = [...new Set([...models, 'gemma-4-26b-a4b-it', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview'])];
@@ -3754,6 +3778,26 @@ ${sourcesPromptContext}
       // [TASK 49] Lazy SSE plumbing: headers go out with the FIRST real
       // delta — until then every error/limit path can still answer with JSON.
       let sseStarted = false;
+      // [TASK 51] بث أفكار النموذج الحقيقية كأحداث SSE منفصلة ({thought}).
+      // نفس الـ laziness: الهيدر بيتبعت مع أول حدث حقيقي (فكرة أو دلتا) —
+      // كل مسارات الأخطاء والحصص بتفضل ترجع JSON عادي زي ما هي.
+      const streamOnThought = wantsStream ? (delta: string) => {
+        try {
+          if (!sseStarted) {
+            sseStarted = true;
+            res.status(200);
+            res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-cache, no-transform');
+            res.setHeader('Connection', 'keep-alive');
+            res.setHeader('X-Accel-Buffering', 'no');
+            (res as any).flushHeaders?.();
+            res.write(`data: ${JSON.stringify({ started: true })}\n\n`);
+          }
+          res.write(`data: ${JSON.stringify({ thought: delta })}\n\n`);
+        } catch (sseErr) {
+          console.warn("SSE write failed:", (sseErr as any)?.message || sseErr);
+        }
+      } : undefined;
       const streamOnChunk = wantsStream ? (delta: string) => {
         try {
           if (!sseStarted) {
@@ -3778,7 +3822,7 @@ ${sourcesPromptContext}
         // shared tail (gemma-26b as absolute last resort).
         let result: any = await tryGenerate(mode === 'agent'
           ? [primaryModel, secondaryModel, tertiaryModel, "gemini-3.1-pro-preview"]
-          : [primaryModel, secondaryModel, tertiaryModel], streamOnChunk ? { onChunk: streamOnChunk } : undefined);
+          : [primaryModel, secondaryModel, tertiaryModel], streamOnChunk ? { onChunk: streamOnChunk, onThought: streamOnThought, withThoughts: true } : undefined);
         if (!result.modelUsed) {
           result.modelUsed = mode === 'agent'
             ? "Gemini 3.8 Flash"

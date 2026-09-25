@@ -1,5 +1,5 @@
 import { Discover } from './Discover';
-import { Mic, Send, ListTodo, Loader2, Volume2, Copy, Check, Trash2, Plus, MicOff, Clock, ThumbsUp, ThumbsDown, RotateCcw, Bot, Sparkles, CheckCheck, Bookmark, Zap, Brain, Globe, Radio, X, VolumeX, Edit3, BookOpen, HardDrive, AlertTriangle, ImageIcon, FileText, Download, Paperclip, Code, Share2, Video, Film, FileVideo, History as HistoryIcon, PanelLeftOpen, PanelLeftClose, Menu, Pin, Edit2, Search, MessageSquare, Maximize2, GraduationCap } from 'lucide-react';
+import { Mic, Send, ListTodo, Loader2, Volume2, Copy, Check, Trash2, Plus, MicOff, Clock, ThumbsUp, ThumbsDown, RotateCcw, Bot, Sparkles, CheckCheck, Bookmark, Zap, Brain, Globe, Radio, X, VolumeX, Edit3, BookOpen, HardDrive, AlertTriangle, ImageIcon, FileText, Download, Paperclip, Code, Share2, Video, Film, FileVideo, History as HistoryIcon, PanelLeftOpen, PanelLeftClose, Menu, Pin, Edit2, Search, ChevronDown, MessageSquare, Maximize2, GraduationCap } from 'lucide-react';
 import { useLanguage } from '../lib/LanguageContext';
 import { useState, useEffect, useRef } from 'react';
 import React from 'react';
@@ -59,7 +59,7 @@ const stripStreamTagsForDisplay = (t: string): string =>
 
 // [TASK 49] قارئ SSE حقيقي: بيقرأ الـ tokens وهي طالعة من السيرفر لحظة بلحظة
 // وبيمرر كل دلتا لـ onDelta، وبرجّع حمولة done النهائية (نفس شكل JSON القديم).
-const consumeChatStream = async (response: Response, onDelta: (delta: string) => void): Promise<any> => {
+const consumeChatStream = async (response: Response, onDelta: (delta: string) => void, onThought?: (delta: string) => void): Promise<any> => {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -78,6 +78,9 @@ const consumeChatStream = async (response: Response, onDelta: (delta: string) =>
         const evt = JSON.parse(dataLine.slice(5).trim());
         if (evt && typeof evt.delta === 'string' && evt.delta) {
           onDelta(evt.delta);
+        } else if (evt && typeof evt.thought === 'string' && evt.thought) {
+          // [TASK 51] أفكار حقيقية من الموديل (أحداث thought من السيرفر)
+          try { onThought?.(evt.thought); } catch {}
         } else if (evt && evt.done) {
           finalPayload = evt.done;
         }
@@ -86,6 +89,30 @@ const consumeChatStream = async (response: Response, onDelta: (delta: string) =>
   }
   return finalPayload;
 };
+
+// [TASK 51] كبسولة «فكر لمدة N ث» بعد اكتمال الرد — نفس سهم ChatGPT بالظبط:
+// سهم بيلف + محتوى التفكير الحقيقي اللي الموديل ببعته أثناء التوليد.
+function ThoughtPill({ thought, thinkSec, isAr }: { thought: string; thinkSec?: number; isAr: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="thoth-thought-wrap mb-3">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="flex items-center gap-2 py-1 group"
+      >
+        <ChevronDown className={`thoth-thought-chevron ${open ? 'thoth-open' : ''}`} size={15} strokeWidth={2.5} />
+        <span className="text-[13px] text-white/45 font-medium group-hover:text-white/70 transition-colors">
+          {isAr ? `فكر لمدة ${thinkSec ?? 1} ث` : `Thought for ${thinkSec ?? 1}s`}
+        </span>
+      </button>
+      <div className={`thoth-thought-panel ${open ? 'thoth-open' : ''}`}>
+        <div className="thoth-thought-inner text-[13px] leading-relaxed text-white/50 whitespace-pre-wrap">{thought}</div>
+      </div>
+    </div>
+  );
+}
 
 export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSelectChatId, onToggleLiveModal, onToggleArtifactModal, onNavigate, isAuthenticated }: ChatProps) {
   const { t, language } = useLanguage();
@@ -130,6 +157,62 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
   }, [isLoading]);
   // [TASK 49] النص الحقيقي المتدفق من السيرفر (token by token) أثناء توليده فعلاً.
   const [streamText, setStreamText] = useState('');
+  // [TASK 51] الكاتب الناعم (نفس أسلوب ChatGPT): الهدف بيتخزن في refs فوراً
+  // مع كل دلتا، وحلقة requestAnimationFrame بتكشف الحروف بمعدل متكيف —
+  // بتتسارع لما الفرق يكبر وبتلحق تدريجي لما تظبط — وكل 60ms رندر React
+  // فعلي واحد بس. ده اللي بيشيل «التقطيع الغريب»: الشنكات اللي بتوصل
+  // دفعات كبيرة من الموديل بتتحول لتدفق مستمر ناعم مهما كان إيقاع الشبكة.
+  const [streamThought, setStreamThought] = useState('');
+  const [shownText, setShownText] = useState('');
+  const [shownThought, setShownThought] = useState('');
+  const [thoughtOpen, setThoughtOpen] = useState(false);
+  const [thinkSec, setThinkSec] = useState<number | null>(null);
+  const streamTargetRef = useRef('');
+  const thoughtTargetRef = useRef('');
+  const streamShownLenRef = useRef(0);
+  const thoughtShownLenRef = useRef(0);
+  const lastShownRenderRef = useRef(0);
+  const lastDeltaRenderRef = useRef(0);
+  const lastThoughtRenderRef = useRef(0);
+  const thoughtUserToggledRef = useRef(false);
+  const thinkDoneMsRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!isLoading) return;
+    let raf = 0;
+    const step = (now: number) => {
+      raf = requestAnimationFrame(step);
+      const sT = streamTargetRef.current;
+      const tT = thoughtTargetRef.current;
+      let ns = streamShownLenRef.current;
+      let nt = thoughtShownLenRef.current;
+      let changed = false;
+      if (ns < sT.length) { ns = Math.min(sT.length, ns + Math.max(2, Math.ceil((sT.length - ns) / 18))); changed = true; }
+      if (nt < tT.length) { nt = Math.min(tT.length, nt + Math.max(3, Math.ceil((tT.length - nt) / 12))); changed = true; }
+      if (!changed) return;
+      streamShownLenRef.current = ns;
+      thoughtShownLenRef.current = nt;
+      if (now - lastShownRenderRef.current >= 60) {
+        lastShownRenderRef.current = now;
+        setShownText(sT.slice(0, ns));
+        setShownThought(tT.slice(0, nt));
+        // تمرير فوري خفيف (مش smooth بيتقافل في نفسه كل دلتا — ده كان
+        // سبب نصف التقطيع) وباحترام لو المستخدم طالع فوق بيقرأ.
+        if (!userHasScrolledUpRef.current) scrollToBottom(true, false);
+        // تثبيت تمرير بانل التفكير على آخر سطر أثناء البث (زي ChatGPT)
+        const tip = document.querySelector('.thoth-thought-panel.thoth-open .thoth-thought-inner') as HTMLElement | null;
+        if (tip && tip.scrollHeight - tip.scrollTop - tip.clientHeight < 60) tip.scrollTop = tip.scrollHeight;
+      }
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [isLoading]);
+  // [TASK 51] سلوك ChatGPT: بانل التفكير بيفتح لوحده أثناء التفكير الفعلي
+  // ويتقفل لوحده أول ما الرد يبدأ — إلا لو المستخدم ضغط السهم بإيده.
+  useEffect(() => {
+    if (thoughtUserToggledRef.current) return;
+    if (streamThought && !streamText) setThoughtOpen(true);
+    else if (streamText && streamThought) setThoughtOpen(false);
+  }, [streamThought, streamText]);
   const [shareCopied, setShareCopied] = useState(false);
 
   const handleQuickShare = async () => {
@@ -1315,11 +1398,37 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         // [TASK 49] رد متدفق حقيقي: نعرض كل token لحظة وصوله، وحمولة done
         // النهائية بنفس شكل JSON القديم فكل منطق المعالجة اللي تحت زي ما هو.
         let acc = '';
+        let tacc = '';
+        setThinkSec(null);
+        thinkDoneMsRef.current = null;
+        // [TASK 51] الهدف بيتحدث فوراً (برندر بحد 50ms) والكشف الناعم مسؤولية
+        // حلقة rAF — ومدة التفكير بتتسجل عند أول دلتا رد حقيقية.
         data = await consumeChatStream(response, (delta) => {
           acc += delta;
-          setStreamText(stripStreamTagsForDisplay(acc));
-          if (!userHasScrolledUpRef.current) scrollToBottom(false, true);
+          const stripped = stripStreamTagsForDisplay(acc);
+          streamTargetRef.current = stripped;
+          const n0 = Date.now();
+          if (n0 - lastDeltaRenderRef.current > 50) {
+            lastDeltaRenderRef.current = n0;
+            setStreamText(stripped);
+          }
+          if (thinkDoneMsRef.current === null) {
+            thinkDoneMsRef.current = Date.now() - sendStartRef.current;
+            setThinkSec(Math.max(1, Math.round(thinkDoneMsRef.current / 1000)));
+          }
+        }, (thought) => {
+          tacc += thought;
+          thoughtTargetRef.current = stripStreamTagsForDisplay(tacc);
+          const n1 = Date.now();
+          if (n1 - lastThoughtRenderRef.current > 50) {
+            lastThoughtRenderRef.current = n1;
+            setStreamThought(thoughtTargetRef.current);
+          }
         });
+        streamTargetRef.current = stripStreamTagsForDisplay(acc);
+        thoughtTargetRef.current = stripStreamTagsForDisplay(tacc);
+        setStreamText(streamTargetRef.current);
+        setStreamThought(thoughtTargetRef.current);
         if (!data || typeof data.text !== 'string') {
           data = { ...(data || {}), text: acc };
         }
@@ -1393,7 +1502,9 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         modelUsed: data.modelUsed,
         audioUrl: data.audioUrl,
         audioDuration: data.audioDuration,
-        audioSummaryInfo: data.audioSummaryInfo
+        audioSummaryInfo: data.audioSummaryInfo,
+        thought: tacc.trim() || undefined, // [TASK 51] أفكار حقيقية من الموديل (لو بعتها)
+        thinkSec: tacc.trim() && thinkDoneMsRef.current ? Math.max(1, Math.round(thinkDoneMsRef.current / 1000)) : undefined
       };
       
       shouldSmoothScrollRef.current = true;
@@ -1484,6 +1595,13 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     } finally {
       setIsLoading(false);
       setStreamText(''); // [TASK 49] تنظيف النص المتدفق في كل الحالات (نجاح/خطأ)
+      // [TASK 51] تصفير حالة التفكير والكاتب الناعم للرسالة الجاية
+      setStreamThought(''); setShownText(''); setShownThought('');
+      setThinkSec(null); setThoughtOpen(false);
+      thoughtUserToggledRef.current = false;
+      thinkDoneMsRef.current = null;
+      streamTargetRef.current = ''; thoughtTargetRef.current = '';
+      streamShownLenRef.current = 0; thoughtShownLenRef.current = 0;
     }
   };
 
@@ -1531,11 +1649,37 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       if (contentType.includes("text/event-stream") && response.body) {
         // [TASK 49] streaming حقيقي لإعادة التوليد برضه — نفس العرض اللحظي
         let acc = '';
+        let tacc = '';
+        setThinkSec(null);
+        thinkDoneMsRef.current = null;
+        // [TASK 51] الهدف بيتحدث فوراً (برندر بحد 50ms) والكشف الناعم مسؤولية
+        // حلقة rAF — ومدة التفكير بتتسجل عند أول دلتا رد حقيقية.
         data = await consumeChatStream(response, (delta) => {
           acc += delta;
-          setStreamText(stripStreamTagsForDisplay(acc));
-          if (!userHasScrolledUpRef.current) scrollToBottom(false, true);
+          const stripped = stripStreamTagsForDisplay(acc);
+          streamTargetRef.current = stripped;
+          const n0 = Date.now();
+          if (n0 - lastDeltaRenderRef.current > 50) {
+            lastDeltaRenderRef.current = n0;
+            setStreamText(stripped);
+          }
+          if (thinkDoneMsRef.current === null) {
+            thinkDoneMsRef.current = Date.now() - sendStartRef.current;
+            setThinkSec(Math.max(1, Math.round(thinkDoneMsRef.current / 1000)));
+          }
+        }, (thought) => {
+          tacc += thought;
+          thoughtTargetRef.current = stripStreamTagsForDisplay(tacc);
+          const n1 = Date.now();
+          if (n1 - lastThoughtRenderRef.current > 50) {
+            lastThoughtRenderRef.current = n1;
+            setStreamThought(thoughtTargetRef.current);
+          }
         });
+        streamTargetRef.current = stripStreamTagsForDisplay(acc);
+        thoughtTargetRef.current = stripStreamTagsForDisplay(tacc);
+        setStreamText(streamTargetRef.current);
+        setStreamThought(thoughtTargetRef.current);
         if (!data || typeof data.text !== 'string') {
           data = { ...(data || {}), text: acc };
         }
@@ -1564,7 +1708,9 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         modelUsed: data.modelUsed,
         audioUrl: data.audioUrl,
         audioDuration: data.audioDuration,
-        audioSummaryInfo: data.audioSummaryInfo
+        audioSummaryInfo: data.audioSummaryInfo,
+        thought: tacc.trim() || undefined, // [TASK 51] أفكار حقيقية من الموديل (لو بعتها)
+        thinkSec: tacc.trim() && thinkDoneMsRef.current ? Math.max(1, Math.round(thinkDoneMsRef.current / 1000)) : undefined
       };
 
       setMessages([...contextMessages, newMsg]);
@@ -1583,6 +1729,13 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     } finally {
       setIsLoading(false);
       setStreamText(''); // [TASK 49] تنظيف النص المتدفق
+      // [TASK 51] تصفير حالة التفكير والكاتب الناعم للرسالة الجاية
+      setStreamThought(''); setShownText(''); setShownThought('');
+      setThinkSec(null); setThoughtOpen(false);
+      thoughtUserToggledRef.current = false;
+      thinkDoneMsRef.current = null;
+      streamTargetRef.current = ''; thoughtTargetRef.current = '';
+      streamShownLenRef.current = 0; thoughtShownLenRef.current = 0;
     }
   };
 
@@ -2620,6 +2773,11 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                   );
                 })() : (
                   <div className="markdown-body text-sm leading-relaxed text-gray-100 space-y-2">
+                    {/* [TASK 51] كبسولة التفكير بعد اكتمال الرد (زي ChatGPT):
+                        تظهر بس لو الموديل بعت أفكار حقيقية وقت التوليد */}
+                    {!msg.isUser && msg.thought && (
+                      <ThoughtPill thought={msg.thought} thinkSec={msg.thinkSec} isAr={isAr} />
+                    )}
                     {!msg.isUser && (msg.audioUrl || msg.audioSummaryInfo) && (
                       <div className="mb-3 w-full">
                         <AudioSummaryPlayer
@@ -2895,37 +3053,73 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           const elapsedLabel = elapsedSec < 60
             ? `${elapsedSec} ث`
             : `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, '0')} د`;
-          const displayStreamText = stripStreamTagsForDisplay(streamText);
+          const displayStreamText = shownText; // [TASK 51] الكشف الناعم (متكيف مع إيقاع الشنكات)
+          const hasThought = !!streamThought;
+          const hasAnswer = !!displayStreamText;
           return (
             <div className="flex flex-col w-full items-end">
               <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
                 <div className="flex-1 min-w-0 py-1 px-1">
-                  {displayStreamText ? (
-                    <div className="thoth-stream-live markdown-body text-sm leading-relaxed text-gray-100 space-y-2">
-                      <ReactMarkdown
-                        components={{
-                          p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
-                          strong: ({ children }) => <strong className="font-bold text-white">{children}</strong>,
-                          code({ inline, className, children, ...props }: any) {
-                            if (inline) {
-                              return (
-                                <code className={`bg-white/15 ${theme.textAccentBright} px-1.5 py-0.5 rounded text-xs font-mono`} dir="ltr" {...props}>
-                                  {children}
-                                </code>
-                              );
-                            }
-                            return (
-                              <pre className="p-3 bg-black/40 rounded-xl text-xs font-mono overflow-x-auto my-2 text-indigo-300">
-                                <code>{children}</code>
-                              </pre>
-                            );
-                          }
-                        }}
-                      >
-                        {displayStreamText}
-                      </ReactMarkdown>
-                      <span className="thoth-stream-caret" aria-hidden="true" />
-                    </div>
+                  {(hasThought || hasAnswer) ? (
+                    <>
+                      {/* [TASK 51] صف التفكير بأسلوب ChatGPT بالظبط: سهم قابل
+                          للدوران + لمعة اسم الإجراء الحقيقي أثناء التفكير، وبعد
+                          أول دلتا رد بيتحول لـ«فكر لمدة N ث» — والمحتوى اللي
+                          تحت البانل هو الأفكار الحقيقية اللي الموديل بيبعتها
+                          فعلاً من السيرفر (مفيش أي حاجة مؤدّعة). */}
+                      {hasThought && (
+                        <div className="thoth-thought-wrap">
+                          <button
+                            type="button"
+                            onClick={() => { thoughtUserToggledRef.current = true; setThoughtOpen(o => !o); }}
+                            aria-expanded={thoughtOpen}
+                            className="thoth-status-line flex items-center gap-2 py-1.5 group"
+                          >
+                            <ChevronDown className={`thoth-thought-chevron ${thoughtOpen ? 'thoth-open' : ''}`} size={16} strokeWidth={2.5} />
+                            {hasAnswer ? (
+                              <span className="text-[13px] text-white/45 font-medium group-hover:text-white/70 transition-colors">
+                                {isAr ? `فكر لمدة ${thinkSec ?? 1} ث` : `Thought for ${thinkSec ?? 1}s`}
+                              </span>
+                            ) : (
+                              <>
+                                <span className="thoth-status-shimmer text-[15px] font-medium">{realStatus}</span>
+                                <span className="text-[11px] text-white/25 tabular-nums" dir="ltr">· {elapsedLabel}</span>
+                              </>
+                            )}
+                          </button>
+                          <div className={`thoth-thought-panel ${thoughtOpen ? 'thoth-open' : ''}`}>
+                            <div className="thoth-thought-inner text-[13px] leading-relaxed text-white/50 whitespace-pre-wrap">{shownThought}</div>
+                          </div>
+                        </div>
+                      )}
+                      {hasAnswer && (
+                        <div className="thoth-stream-live markdown-body text-sm leading-relaxed text-gray-100 space-y-2">
+                          <ReactMarkdown
+                            components={{
+                              p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
+                              strong: ({ children }) => <strong className="font-bold text-white">{children}</strong>,
+                              code({ inline, className, children, ...props }: any) {
+                                if (inline) {
+                                  return (
+                                    <code className={`bg-white/15 ${theme.textAccentBright} px-1.5 py-0.5 rounded text-xs font-mono`} dir="ltr" {...props}>
+                                      {children}
+                                    </code>
+                                  );
+                                }
+                                return (
+                                  <pre className="p-3 bg-black/40 rounded-xl text-xs font-mono overflow-x-auto my-2 text-indigo-300">
+                                    <code>{children}</code>
+                                  </pre>
+                                );
+                              }
+                            }}
+                          >
+                            {displayStreamText}
+                          </ReactMarkdown>
+                          <span className="thoth-stream-caret" aria-hidden="true" />
+                        </div>
+                      )}
+                    </>
                   ) : (
                     /* [TASK 50] سطر الحالة بأسلوب ChatGPT بالظبط: النص اسم
                        الإجراء الحقيقي اللي شغال فعلاً على السيرفر دلوقتي،

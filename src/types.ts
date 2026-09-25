@@ -34,6 +34,8 @@ export interface Message {
   isLimitError?: boolean;
   isServerError?: boolean;
   modelUsed?: string;
+  thought?: string; // [TASK 51] ملخص التفكير الحقيقي من الموديل (لو بعته)
+  thinkSec?: number; // [TASK 51] مدة التفكير الفعلية بالثواني
   imageUrl?: string;
   videoUrl?: string;
   audioUrl?: string;
