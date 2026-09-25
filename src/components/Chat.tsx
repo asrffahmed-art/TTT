@@ -229,7 +229,7 @@ function CollapsibleCodeBlock({ codeString, lang, isAr, theme, children }: { cod
 // [TASK 53] بلوك الكود أثناء البث بأسلوب ChatGPT بالظبط: بدل ما الكود يتكتب
 // «في الوش»، بيظهر كسطر نشاط مطويّ — «بيكتب الكود…» بلمعة + سهم. تدوس عليه
 // يفتح ويوريك الكود الحقيقي وهو بيتكتب live (بيثبّت لوحده على آخر سطر).
-// أول ما الكود يخلص السطر يهدى لاسم اللغة + زرار النسخ ويفضل مطويّ، ولما
+// [TASK 54] أول ما الكود يخلص السطر يهدى لـ«كتب الكود · اللغة» — سطر عادي مش مستطيل، ولما
 // الرد يكتمل يترندر البلوك النهائي المعتاد (مفتوح، سهم + لغة + نسخ).
 function StreamingCodeBlock({ codeString, lang, isAr, theme, writing, blockIdx, openKey, onToggleKey }: { codeString: string; lang?: string; isAr: boolean; theme: any; writing: boolean; blockIdx: number; openKey: number | null; onToggleKey: (k: number) => void }) {
   const open = openKey === blockIdx;
@@ -246,51 +246,51 @@ function StreamingCodeBlock({ codeString, lang, isAr, theme, writing, blockIdx, 
       setTimeout(() => setCopied(false), 2000);
     } catch {}
   };
+  // [TASK 54] سطر نشاط زي Claude بالظبط — مش مستطيل: نفس عيلة سطور النشاط
+  // (سهم بيلف + نص بلمعة «بيكتب الكود…»)، وأول ما الكود يخلص يهدى لـ
+  // «كتب الكود · اللغة» زي خطوات Claude المكتملة. المفتوح بسطر جانبي رفيع
+  // زي بانل التفكير — مفيش إطار ولا خلفية ولا ظل ولا header.
   return (
-    <div className="my-3 rounded-xl overflow-hidden border border-white/15 bg-black/30 backdrop-blur-md shadow-xl text-left" dir="ltr">
-      <div className="bg-white/5 backdrop-blur-md px-4 py-1.5 flex items-center justify-between text-xs text-gray-400 border-b border-white/10">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            type="button"
-            onClick={() => onToggleKey(blockIdx)}
-            aria-expanded={open}
-            title={open ? (isAr ? 'طي الكود' : 'Collapse code') : (isAr ? 'شوف الكود بيتكتب' : 'Watch it being written')}
-            className="p-0.5 rounded hover:bg-white/10 hover:text-white transition-colors"
-          >
-            <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${open ? '' : '-rotate-90'}`} size={14} strokeWidth={2.5} />
-          </button>
+    <div className="my-2">
+      <div className="flex items-center gap-1.5 py-0.5">
+        <button
+          type="button"
+          onClick={() => onToggleKey(blockIdx)}
+          aria-expanded={open}
+          title={open ? (isAr ? 'طي الكود' : 'Collapse code') : (isAr ? 'شوف الكود بيتكتب' : 'Watch it being written')}
+          className="flex items-center gap-2 group min-w-0"
+        >
+          <ChevronDown className={`thoth-thought-chevron ${open ? 'thoth-open' : ''}`} size={15} strokeWidth={2.5} />
           {writing ? (
             <>
-              <span className="thoth-status-shimmer text-[12px] font-semibold">{isAr ? 'بيكتب الكود…' : 'Writing code…'}</span>
-              {lang && <span className="font-mono text-[10px] text-white/35 bg-white/5 px-1.5 py-0.5 rounded truncate" dir="ltr">{lang}</span>}
+              <span className="thoth-status-shimmer text-[14px] font-medium">{isAr ? 'بيكتب الكود…' : 'Writing code…'}</span>
+              {lang && <span className="font-mono text-[11px] text-white/35 truncate" dir="ltr">{lang}</span>}
             </>
           ) : (
-            <span className="font-mono text-[11px] text-gray-300 truncate" dir="ltr">{lang || 'code'}</span>
+            <>
+              <span className="text-[13px] text-white/45 font-medium group-hover:text-white/70 transition-colors">
+                {isAr ? 'كتب الكود' : 'Wrote code'}
+              </span>
+              {lang && <span className="font-mono text-[11px] text-white/35 truncate" dir="ltr">{lang}</span>}
+            </>
           )}
-        </div>
+        </button>
         {!writing && (
           <button
             onClick={copyCode}
-            className="flex items-center gap-1 hover:text-white transition-colors text-[11px] bg-white/10 px-2 py-0.5 rounded shrink-0"
+            title={isAr ? 'نسخ الكود' : 'Copy code'}
+            className="p-0.5 rounded text-white/30 hover:text-white transition-colors shrink-0"
           >
-            {copied ? (
-              <>
-                <CheckCheck className={`w-3 h-3 ${theme.textAccent}`} />
-                <span className={`${theme.textAccent} font-bold`}>{isAr ? 'تم النسخ' : 'Copied'}</span>
-              </>
-            ) : (
-              <>
-                <Copy className="w-3 h-3" />
-                <span>{isAr ? 'نسخ' : 'Copy'}</span>
-              </>
-            )}
+            {copied ? <CheckCheck className={`w-3.5 h-3.5 ${theme.textAccent}`} /> : <Copy className="w-3.5 h-3.5" />}
           </button>
         )}
       </div>
       {open && (
-        <pre ref={preRef} className="p-4 text-xs font-mono overflow-auto max-h-64 text-white/70 leading-relaxed">
-          <code>{codeString}</code>
-        </pre>
+        <div className="mt-1 border-l-2 border-white/10 pl-3" dir="ltr">
+          <pre ref={preRef} className="py-1 text-xs font-mono overflow-auto max-h-64 text-white/70 leading-relaxed text-left">
+            <code>{codeString}</code>
+          </pre>
+        </div>
       )}
     </div>
   );
