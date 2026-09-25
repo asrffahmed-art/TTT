@@ -1394,11 +1394,11 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
 
       const contentType = response.headers.get("content-type") || "";
       let data: any = {};
+      let tacc = ''; // [TASK 51] أفكار الموديل المجمعة — معلنة هنا عشان النطاق يوصل لبناء الرسالة
       if (contentType.includes("text/event-stream") && response.body) {
         // [TASK 49] رد متدفق حقيقي: نعرض كل token لحظة وصوله، وحمولة done
         // النهائية بنفس شكل JSON القديم فكل منطق المعالجة اللي تحت زي ما هو.
         let acc = '';
-        let tacc = '';
         setThinkSec(null);
         thinkDoneMsRef.current = null;
         // [TASK 51] الهدف بيتحدث فوراً (برندر بحد 50ms) والكشف الناعم مسؤولية
@@ -1503,8 +1503,11 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         audioUrl: data.audioUrl,
         audioDuration: data.audioDuration,
         audioSummaryInfo: data.audioSummaryInfo,
-        thought: tacc.trim() || undefined, // [TASK 51] أفكار حقيقية من الموديل (لو بعتها)
-        thinkSec: tacc.trim() && thinkDoneMsRef.current ? Math.max(1, Math.round(thinkDoneMsRef.current / 1000)) : undefined
+        // [TASK 51] أفكار حقيقية من الموديل (لو بعتها) — spread شرطي بقيم معرفة دايماً
+        ...(tacc.trim() ? {
+          thought: tacc.trim(),
+          thinkSec: thinkDoneMsRef.current ? Math.max(1, Math.round(thinkDoneMsRef.current / 1000)) : 1
+        } : {})
       };
       
       shouldSmoothScrollRef.current = true;
@@ -1646,10 +1649,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       
       const contentType = response.headers.get("content-type") || "";
       let data: any = {};
+      let tacc = ''; // [TASK 51] أفكار الموديل المجمعة — معلنة هنا عشان النطاق يوصل لبناء الرسالة
       if (contentType.includes("text/event-stream") && response.body) {
         // [TASK 49] streaming حقيقي لإعادة التوليد برضه — نفس العرض اللحظي
         let acc = '';
-        let tacc = '';
         setThinkSec(null);
         thinkDoneMsRef.current = null;
         // [TASK 51] الهدف بيتحدث فوراً (برندر بحد 50ms) والكشف الناعم مسؤولية
@@ -1709,8 +1712,11 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         audioUrl: data.audioUrl,
         audioDuration: data.audioDuration,
         audioSummaryInfo: data.audioSummaryInfo,
-        thought: tacc.trim() || undefined, // [TASK 51] أفكار حقيقية من الموديل (لو بعتها)
-        thinkSec: tacc.trim() && thinkDoneMsRef.current ? Math.max(1, Math.round(thinkDoneMsRef.current / 1000)) : undefined
+        // [TASK 51] أفكار حقيقية من الموديل (لو بعتها) — spread شرطي بقيم معرفة دايماً
+        ...(tacc.trim() ? {
+          thought: tacc.trim(),
+          thinkSec: thinkDoneMsRef.current ? Math.max(1, Math.round(thinkDoneMsRef.current / 1000)) : 1
+        } : {})
       };
 
       setMessages([...contextMessages, newMsg]);
