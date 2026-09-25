@@ -1505,9 +1505,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       isUploadedToFileApiPayload = attachedFile.isUploadedToFileApi || false;
       thumbnailUrlPayload = attachedFile.thumbnailUrl;
 
-      // [TASK 56] ملفات أوفيس: النص المستخرج محليًا هو اللي هيوصل للموديل —
-      // بنمنع fileUri/inline لأن Gemini بيرفض أنواع MIME بتاعة أوفيس
-      // (ملاحظة: بعد كل الإسنادات فوق عشان مش نتحطّم عليها)
+      // [TASK 56] ملفات أوفيس: النص المستخرج محليًا هو اللي هيوصل للموديل عبر
+      // documentText (part نصي منفصل على السيرفر) — بنمنع fileUri/inline لأن
+      // Gemini بيرفض أنواع MIME بتاعة أوفيس، ومش بنلمس نص الرسالة نفسه
+      // عشان المصنفات والبوابات تشتغل على سؤال المستخدم الحقيقي زي الـ PDF
       if (attachedFile.isOfficeDoc) {
         officeDocPayload = attachedFile.extractedText
           ? wrapOfficeAttachmentText(attachedFile.extractedText, attachedFile.name, attachedFile.extractedNote)
@@ -1648,17 +1649,6 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
         }
       }
 
-      // [TASK 56] محتوى مستندات أوفيس المستخرج محليًا بيتبعت نص داخل آخر رسالة
-      // من المستخدم — السيرفر والموديل بيقراه عادي بدون fileData غير مدعوم
-      if (officeDocPayload) {
-        for (let i = apiMessages.length - 1; i >= 0; i--) {
-          if (apiMessages[i].role === 'user') {
-            apiMessages[i].text = `${apiMessages[i].text || ''}\n\n${officeDocPayload}`;
-            break;
-          }
-        }
-      }
-
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1668,6 +1658,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           audio: audioPayload,
           file: officeDocPayload ? undefined : (isUploadedToFileApiPayload ? undefined : filePayload),
           fileUri: officeDocPayload ? undefined : fileUriPayload,
+          documentText: officeDocPayload, // [TASK 56] نص مستند أوفيس المستخرج محليًا — part نصي منفصل على السيرفر
           fileRefName: fileRefNamePayload,
           fileName: namePayload,
           fileType: typePayload,

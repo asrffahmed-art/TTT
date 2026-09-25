@@ -2899,6 +2899,15 @@ app.post("/api/chat", async (req, res) => {
             });
           }
 
+          // [TASK 56] مستندات أوفيس (Word/Excel/PowerPoint): الكلاينت بيستخرج النص
+          // محليًا وبيبعتله في req.body.documentText — بنحطه كجزء نصي إضافي في
+          // نفس دور المستخدم. مهم: بنحطه كـ part منفصل مش جوه m.text عشان
+          // المصنفات (تلخيص/صوت) بتقرا userQuery من نص الرسالة — كده التصنيف
+          // والكوتا والبوابات بتشتغل على سؤال المستخدم الحقيقي زي الـ PDF بالظبط.
+          if (typeof req.body.documentText === "string" && req.body.documentText.trim()) {
+            normalized[actualIndex].parts.push({ text: req.body.documentText.slice(0, 240000) });
+          }
+
           if (req.body.image) {
             if (typeof req.body.image === "string" && req.body.image.startsWith("https://generativelanguage.googleapis.com/")) {
               normalized[actualIndex].parts.push({
