@@ -1,7 +1,7 @@
 import { Discover } from './Discover';
 import { Mic, Send, ListTodo, Loader2, Volume2, Copy, Check, Trash2, Plus, MicOff, Clock, ThumbsUp, ThumbsDown, RotateCcw, Bot, Sparkles, CheckCheck, Bookmark, Zap, Brain, Globe, Radio, X, VolumeX, Edit3, BookOpen, HardDrive, AlertTriangle, ImageIcon, FileText, Download, Paperclip, Code, Share2, Video, Film, FileVideo, History as HistoryIcon, PanelLeftOpen, PanelLeftClose, Menu, Pin, Edit2, Search, ChevronDown, MessageSquare, Maximize2, GraduationCap } from 'lucide-react';
 import { useLanguage } from '../lib/LanguageContext';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { doc, setDoc } from 'firebase/firestore';
@@ -356,6 +356,43 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
   // Chat مش جوّه المكوّن لأن ReactMarkdown بيعيد تركيبه مع كل دلتا وبيمسح
   // أي useState داخلي. مفتاح لكل بلوك عشان تعدد البلوكات في نفس الرد.
   const [streamCodeOpenKey, setStreamCodeOpenKey] = useState<number | null>(null);
+  // [TASK 55] الجذر الحقيقي لمشكلة «معلقة والسهم مش بيفتح»: كائن components
+  // كان بيتعرّف inline فبيستُنشد بدوال جديدة كل رندر (كل ~60ms أثناء البث)،
+  // وReact بيعتبرها أنواع مختلفة فيعيد بناء شجرة الماركداون كلها (remount):
+  // أنيميشن اللمعة بتبدأ من أولها باستمرار فتبان واقفة، وضغطة المستخدم بتضيع
+  // لأن عقدة الزرار بتستبدل بين mousedown و mouseup. الحل: هوية ثابتة
+  // (useMemo []) والقيم المتغيرة بتتقرا من ref بيتحدّث كل رندر.
+  const codeSeenRef = useRef(0);
+  const liveMdCtxRef = useRef<any>({ fenceOpenNow: false, totalFenced: 0, isAr: true, theme: null as any, openKey: null as number | null, toggle: (_k: number) => {} });
+  const liveMdComponents = useMemo(() => ({
+    // [TASK 53] فكّ الـ <pre> الافتراضي — البلوك المخصص بيعمل pre بتاعه
+    pre: ({ children }: any) => <>{children}</>,
+    p: ({ children }: any) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
+    strong: ({ children }: any) => <strong className="font-bold text-white">{children}</strong>,
+    code({ node, className, children, ...props }: any) {
+      const ctx = liveMdCtxRef.current;
+      const sc = String(children).replace(/\n$/, '');
+      const lm = /language-(\w+)/.exec(className || '');
+      // [TASK 53] react-markdown v10 شال خاصية inline — الاكتشاف الصحيح:
+      // بلوك اللغة عنده language-* والمحتوى متعدد السطور
+      const isInlineCode = !className?.includes('language-') && !sc.includes('\n');
+      if (isInlineCode) {
+        return (
+          <code className={`bg-white/15 ${ctx.theme.textAccentBright} px-1.5 py-0.5 rounded text-xs font-mono`} dir="ltr" {...props}>
+            {children}
+          </code>
+        );
+      }
+      // [TASK 53/55] أثناء البث الكود مش بيتكتب «في الوش»: بلوك مطويّ بأسلوب
+      // ChatGPT — وهوية المكوّن ثابتة دلوقتي فمفيش remounts: اللمعة بتكمل
+      // وضغطات السهم بتوصل فعلًا.
+      const mine = ++codeSeenRef.current;
+      const isWriting = ctx.fenceOpenNow && mine === ctx.totalFenced;
+      return (
+        <StreamingCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={ctx.isAr} theme={ctx.theme} writing={isWriting} blockIdx={mine} openKey={ctx.openKey} onToggleKey={ctx.toggle} />
+      );
+    }
+  }), []);
   const activityUserToggledRef = useRef(false);
   const streamActivityRef = useRef<any>(null);
   const pendingFileRef = useRef<{ name: string; type?: string } | null>(null);
@@ -3288,9 +3325,13 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           // [TASK 52] لو فيه مرفق حقيقي مع الرسالة، السطر بيقول إنه بياخد
           // الملف ويحلله فعلاً (بيحصل على السيرفر قبل أول token)
           const pf = pendingFileRef.current;
+          // [TASK 55] لو فيه أفكار حقيقية بتتدفق دلوقتي ومفيش رد لسه — القسم
+          // الصادق هو «بيفكر بعمق» حتى في الوضع السريع (الموديل بيفكر فيه برضه)
           const effectiveStatus = pf
             ? (isAr ? `بيقرأ ويحلل «${pf.name}»…` : `Reading & analyzing «${pf.name}»…`)
-            : realStatus;
+            : (streamThought && !shownText
+              ? (isAr ? 'بيفكر بعمق…' : 'Thinking deeply…')
+              : realStatus);
           const elapsedSec = Math.floor(elapsedMs / 1000);
           // صيغة الوقت الحقيقي: ثواني تحت الدقيقة، دقيقة:ثانية فوقها (الاتجاه LTR عشان الأرقام)
           const elapsedLabel = elapsedSec < 60
@@ -3306,7 +3347,9 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           const fenceMatches = displayStreamText.match(/```/g) || [];
           const fenceOpenNow = fenceMatches.length % 2 === 1;
           const totalFenced = Math.ceil(fenceMatches.length / 2);
-          let codeSeen = 0;
+          // [TASK 55] تحديث سياق الماركداون ثابت الهوية + تصفير عدّاد البلوكات لهذا الرندر
+          liveMdCtxRef.current = { fenceOpenNow, totalFenced, isAr, theme, openKey: streamCodeOpenKey, toggle: (k: number) => setStreamCodeOpenKey(cur => cur === k ? null : k) };
+          codeSeenRef.current = 0;
           return (
             <div className="flex flex-col w-full items-end">
               <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
@@ -3410,36 +3453,9 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                       )}
                       {hasAnswer && (
                         <div className="thoth-stream-live markdown-body text-sm leading-relaxed text-gray-100 space-y-2">
-                          <ReactMarkdown
-                            components={{
-                              // [TASK 53] فكّ الـ <pre> الافتراضي — البلوك المخصص بيعمل pre بتاعه
-                              pre: ({ children }) => <>{children}</>,
-                              p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
-                              strong: ({ children }) => <strong className="font-bold text-white">{children}</strong>,
-                              code({ node, className, children, ...props }: any) {
-                                const sc = String(children).replace(/\n$/, '');
-                                const lm = /language-(\w+)/.exec(className || '');
-                                // [TASK 53] react-markdown v10 شال خاصية inline —
-                                // الاكتشاف الصحيح: بلوك اللغة عنده language-* والمحتوى متعدد السطور
-                                const isInlineCode = !className?.includes('language-') && !sc.includes('\n');
-                                if (isInlineCode) {
-                                  return (
-                                    <code className={`bg-white/15 ${theme.textAccentBright} px-1.5 py-0.5 rounded text-xs font-mono`} dir="ltr" {...props}>
-                                      {children}
-                                    </code>
-                                  );
-                                }
-                                // [TASK 53] أثناء البث الكود مش بيتكتب «في الوش»:
-                                // بلوك مطويّ بأسلوب ChatGPT — «بيكتب الكود…» بلمعة
-                                // والسهم بيفتح على الكود الحقيقي وهو بيتدفق live.
-                                const mine = ++codeSeen;
-                                const isWriting = fenceOpenNow && mine === totalFenced;
-                                return (
-                                  <StreamingCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme} writing={isWriting} blockIdx={mine} openKey={streamCodeOpenKey} onToggleKey={(k) => setStreamCodeOpenKey(cur => cur === k ? null : k)} />
-                                );
-                              }
-                            }}
-                          >
+                          {/* [TASK 55] هوية ثابتة لمكونات الماركداون الحي — مفيش remount
+                              مع كل دلتا: اللمعة بتكمل وضغطات السهم بتوصل فعلًا */}
+                          <ReactMarkdown components={liveMdComponents}>
                             {displayStreamText}
                           </ReactMarkdown>
                           <span className="thoth-stream-caret" aria-hidden="true" />
