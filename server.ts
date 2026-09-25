@@ -952,11 +952,16 @@ async function trackAiRequest(
   }
 }
 
+// [TASK 49] Optional real-token streaming: when opts.onChunk is provided the
+// model call streams chunks AS THEY ARE GENERATED (same params, same fallback
+// chain, same guard, same tracking). The aggregated text is returned exactly
+// like a non-streaming response, so callers need no other change.
 async function generateContentWithTracking(
   params: any,
   userId: string | null | undefined = "guest",
   service: string = "General",
-  userPlan: string = "Free"
+  userPlan: string = "Free",
+  opts?: { onChunk?: (delta: string) => void }
 ) {
   const start = Date.now();
   let success = false;
@@ -1023,6 +1028,35 @@ async function generateContentWithTracking(
         if (mod && mod.startsWith('gemma') && attemptParams.config?.thinkingConfig) {
           const { thinkingConfig, ...restConfig } = attemptParams.config;
           attemptParams.config = restConfig;
+        }
+        // [TASK 49] Real token streaming when a chunk callback is provided:
+        // identical attemptParams — only the transport differs.
+        if (opts?.onChunk) {
+          const stream = await ai.models.generateContentStream(attemptParams);
+          let streamedText = "";
+          let lastUsage: any = undefined;
+          try {
+            for await (const chunk of stream as any) {
+              const t = (chunk as any)?.text || "";
+              if (t) {
+                streamedText += t;
+                try { opts.onChunk(t); } catch {}
+              }
+              if ((chunk as any)?.usageMetadata) lastUsage = (chunk as any).usageMetadata;
+            }
+          } catch (streamErr) {
+            // Stream broke MID-generation: keep the partial text the client
+            // already received (same grace behaviour as ChatGPT); only a
+            // fully-empty stream falls through to the next fallback model.
+            if (!streamedText) throw streamErr;
+            console.warn("Stream broke after partial text, keeping partial:", (streamErr as any)?.message || streamErr);
+          }
+          if (streamedText) {
+            response = { text: streamedText, usageMetadata: lastUsage } as any;
+            success = true;
+            break;
+          }
+          throw new Error(`empty stream from ${mod}`);
         }
         response = await ai.models.generateContent(attemptParams);
         if (response && response.text) {
@@ -2740,6 +2774,12 @@ async function recordSuccessfulDailyTextSummaryCredit(userId?: string, clientIp?
 app.post("/api/chat", async (req, res) => {
     try {
       const { messages, mode = 'fast', userId } = req.body;
+      // [TASK 49] Real response streaming (ChatGPT-style). The whole pipeline
+      // above/below is unchanged: quota, image, audio and web-search paths all
+      // keep returning normal JSON. ONLY the final main text generation flips
+      // to SSE — lazily, at the FIRST real delta, so any failure before that
+      // still returns a normal JSON response the client already understands.
+      const wantsStream = req.body?.stream === true;
       const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1').toString().split(',')[0].trim();
 
       const userProfileContext = await getUserProfileContext(userId);
@@ -3666,7 +3706,8 @@ ${sourcesPromptContext}
       }
 
       // Helper function to try generating content with fallback models and retry on 429 / 503
-      const tryGenerate = async (models: string[]) => {
+      // [TASK 49] streamOpts passthrough — the fallback chain itself is untouched.
+      const tryGenerate = async (models: string[], streamOpts?: { onChunk?: (delta: string) => void }) => {
         let lastError: any = null;
         // Prioritize Gemma 4 26B as the immediate limit fallback
         const candidateModelList = [...new Set([...models, 'gemma-4-26b-a4b-it', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview'])];
@@ -3680,7 +3721,7 @@ ${sourcesPromptContext}
                 model,
                 contents: normalized,
                 config: currentConfig
-              });
+              }, undefined, undefined, undefined, streamOpts);
               if (response && response.text) {
                 const usedName = model.includes('3.8') ? "Gemini 3.8 Flash" : model.includes('3.7') ? "Gemini 3.7 Flash" : model.includes('3.6') ? "Gemini 3.6 Flash" : model.includes('3.1') ? "Gemini 3.1" : model.includes('31b') ? "Gemma 4 31B" : "Gemma 4 26B";
                 return { text: response.text, modelUsed: usedName, actualModel: model };
@@ -3710,13 +3751,34 @@ ${sourcesPromptContext}
         throw lastError;
       };
 
+      // [TASK 49] Lazy SSE plumbing: headers go out with the FIRST real
+      // delta — until then every error/limit path can still answer with JSON.
+      let sseStarted = false;
+      const streamOnChunk = wantsStream ? (delta: string) => {
+        try {
+          if (!sseStarted) {
+            sseStarted = true;
+            res.status(200);
+            res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-cache, no-transform');
+            res.setHeader('Connection', 'keep-alive');
+            res.setHeader('X-Accel-Buffering', 'no');
+            (res as any).flushHeaders?.();
+            res.write(`data: ${JSON.stringify({ started: true })}\n\n`);
+          }
+          res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+        } catch (sseErr) {
+          console.warn("SSE write failed:", (sseErr as any)?.message || sseErr);
+        }
+      } : undefined;
+
       try {
         // [Task 38] Agent mode must NOT fall to a small Gemma while any
         // Gemini option is alive: 3.8 -> 3.7 -> 3.6 -> 3.1-pro, THEN the
         // shared tail (gemma-26b as absolute last resort).
         let result: any = await tryGenerate(mode === 'agent'
           ? [primaryModel, secondaryModel, tertiaryModel, "gemini-3.1-pro-preview"]
-          : [primaryModel, secondaryModel, tertiaryModel]);
+          : [primaryModel, secondaryModel, tertiaryModel], streamOnChunk ? { onChunk: streamOnChunk } : undefined);
         if (!result.modelUsed) {
           result.modelUsed = mode === 'agent'
             ? "Gemini 3.8 Flash"
@@ -3792,17 +3854,39 @@ ${sourcesPromptContext}
           }
         }
 
-        res.json(result);
+        // [TASK 49] Streamed requests get the SAME payload as a done event;
+        // everyone else keeps the classic single JSON response.
+        if (sseStarted) {
+          res.write(`data: ${JSON.stringify({ done: result })}\n\n`);
+          res.end();
+        } else {
+          res.json(result);
+        }
       } catch (err: any) {
         console.error("All AI model attempts failed:", err?.message || err);
-        res.json({ 
-          text: "عذراً، وصل استخدام الذكاء الاصطناعي إلى الحد المؤقت المسموح به. يرجى الانتظار بضع ثوانٍ وإعادة إرسال الرسالة.",
-          error: true, debug: err?.message || String(err)
-        });
+        if (sseStarted) {
+          try {
+            res.write(`data: ${JSON.stringify({ done: { text: "عذراً، وصل استخدام الذكاء الاصطناعي إلى الحد المؤقت المسموح به. يرجى الانتظار بضع ثوانٍ وإعادة إرسال الرسالة.", error: true, debug: err?.message || String(err) } })}\n\n`);
+            res.end();
+          } catch {}
+        } else {
+          res.json({ 
+            text: "عذراً، وصل استخدام الذكاء الاصطناعي إلى الحد المؤقت المسموح به. يرجى الانتظار بضع ثوانٍ وإعادة إرسال الرسالة.",
+            error: true, debug: err?.message || String(err)
+          });
+        }
       }
     } catch (error: any) {
       console.error("Error generating response:", error);
-      res.json({ text: "عذراً، حدث خطأ مؤقت أثناء الاتصال بالذكاء الاصطناعي. يرجى إعادة المحاولة.", error: true });
+      // [TASK 49] if streaming already began we must end the SSE properly.
+      if (typeof sseStarted !== 'undefined' && sseStarted) {
+        try {
+          res.write(`data: ${JSON.stringify({ done: { text: "عذراً، حدث خطأ مؤقت أثناء الاتصال بالذكاء الاصطناعي. يرجى إعادة المحاولة.", error: true } })}\n\n`);
+          res.end();
+        } catch {}
+      } else {
+        res.json({ text: "عذراً، حدث خطأ مؤقت أثناء الاتصال بالذكاء الاصطناعي. يرجى إعادة المحاولة.", error: true });
+      }
     }
   });
 

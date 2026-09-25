@@ -32,8 +32,6 @@ import { Subscription } from './Subscription';
 import { SearchResultView } from './SearchResultView';
 import { ArtifactViewer } from './ArtifactViewer';
 import { AdPlacement } from './AdPlacement';
-// [TASK 48] صندوق خطوات تنفيذ الرد (خطوات متسلسلة + مؤقّت) — البحث في الويب منفصل تماماً
-import ResponseSteps, { type ResponseStep } from './ResponseSteps';
 import { AudioSummaryPlayer } from './AudioSummaryPlayer';
 import { WebSource, WebImage, Message } from '../types';
 import { useAppTheme } from '../lib/themeService';
@@ -50,7 +48,46 @@ interface ChatProps {
   isAuthenticated?: boolean;
 }
 
-export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSelectChatId, onToggleLiveModal, onToggleArtifactModal, onNavigate, isAuthenticated }: ChatProps) {
+// [TASK 49] نشيل وسوم الماورضة ([[THOTH_...]] و <action>) من النص المتدفق
+// أثناء العرض فقط — الرد النهائي بيمرّ على نفس معالجة الوسوم الموجودة أصلاً.
+const stripStreamTagsForDisplay = (t: string): string =>
+  t
+    .replace(/<action>[\s\S]*?<\/action>/g, '')
+    .replace(/<action>[\s\S]*$/g, '')
+    .replace(/\[\[THOTH_[A-Z_]+::[\s\S]*?\]\]/g, '')
+    .replace(/\[\[THOTH_[A-Z_]+::[\s\S]*$/g, '');
+
+// [TASK 49] قارئ SSE حقيقي: بيقرأ الـ tokens وهي طالعة من السيرفر لحظة بلحظة
+// وبيمرر كل دلتا لـ onDelta، وبرجّع حمولة done النهائية (نفس شكل JSON القديم).
+const consumeChatStream = async (response: Response, onDelta: (delta: string) => void): Promise<any> => {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalPayload: any = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const dataLine = rawEvent.split('\n').find(l => l.startsWith('data:'));
+      if (!dataLine) continue;
+      try {
+        const evt = JSON.parse(dataLine.slice(5).trim());
+        if (evt && typeof evt.delta === 'string' && evt.delta) {
+          onDelta(evt.delta);
+        } else if (evt && evt.done) {
+          finalPayload = evt.done;
+        }
+      } catch {}
+    }
+  }
+  return finalPayload;
+};
+
+export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSelectedChatUpdate, onNavigate, initialMode, initialSessionId, onModeChange, onStreamingStarted, isSidebarCollapsed, onToggleSidebar }: ChatProps) {
   const { t, language } = useLanguage();
   const isAr = language === 'ar';
   const theme = useAppTheme();
@@ -81,7 +118,8 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
 
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  // [TASK 48] مؤقّت خطوات الرد: بيشترت من لحظة الإرسال وبيتحدث كل 100ms أثناء التحميل
+  // [TASK 49] مؤقّت حقيقي: بيقيس المدة الفعلية للطلب اللي شغال فعلاً على السيرفر
+  // (نفس أسلوب ChatGPT «Thinking · 8s») — من لحظة الإرسال لأول/آخر بايت.
   const [elapsedMs, setElapsedMs] = useState(0);
   const sendStartRef = useRef<number>(0);
   useEffect(() => {
@@ -90,6 +128,8 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     const iv = setInterval(() => setElapsedMs(Date.now() - sendStartRef.current), 100);
     return () => clearInterval(iv);
   }, [isLoading]);
+  // [TASK 49] النص الحقيقي المتدفق من السيرفر (token by token) أثناء توليده فعلاً.
+  const [streamText, setStreamText] = useState('');
   const [shareCopied, setShareCopied] = useState(false);
 
   const handleQuickShare = async () => {
@@ -1264,12 +1304,28 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           fileName: namePayload,
           fileType: typePayload,
           mode: selectedMode,
-          userId: userId
+          userId: userId,
+          stream: true // [TASK 49] رد متدفق حقيقي (SSE) — الـ tokens بتتبعت وهي بتتولد فعلاً
         })
       });
 
       const contentType = response.headers.get("content-type") || "";
-      const data = contentType.includes("application/json") ? await response.json().catch(() => ({})) : {};
+      let data: any = {};
+      if (contentType.includes("text/event-stream") && response.body) {
+        // [TASK 49] رد متدفق حقيقي: نعرض كل token لحظة وصوله، وحمولة done
+        // النهائية بنفس شكل JSON القديم فكل منطق المعالجة اللي تحت زي ما هو.
+        let acc = '';
+        data = await consumeChatStream(response, (delta) => {
+          acc += delta;
+          setStreamText(stripStreamTagsForDisplay(acc));
+          if (!userHasScrolledUpRef.current) scrollToBottom(false, true);
+        });
+        if (!data || typeof data.text !== 'string') {
+          data = { ...(data || {}), text: acc };
+        }
+      } else {
+        data = contentType.includes("application/json") ? await response.json().catch(() => ({})) : {};
+      }
 
       // Distinguish REAL quota limits (server-confirmed) from server/network failures.
       // A 404/500 or offline fetch must NOT be reported as "usage quota exhausted".
@@ -1427,6 +1483,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       }]);
     } finally {
       setIsLoading(false);
+      setStreamText(''); // [TASK 49] تنظيف النص المتدفق في كل الحالات (نجاح/خطأ)
     }
   };
 
@@ -1464,13 +1521,27 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: apiMessages, mode: selectedMode })
+        body: JSON.stringify({ messages: apiMessages, mode: selectedMode, stream: true }) // [TASK 49] streaming حقيقي
       });
 
       if (!response.ok) throw new Error('API Error');
       
       const contentType = response.headers.get("content-type") || "";
-      const data = contentType.includes("application/json") ? await response.json().catch(() => ({})) : {};
+      let data: any = {};
+      if (contentType.includes("text/event-stream") && response.body) {
+        // [TASK 49] streaming حقيقي لإعادة التوليد برضه — نفس العرض اللحظي
+        let acc = '';
+        data = await consumeChatStream(response, (delta) => {
+          acc += delta;
+          setStreamText(stripStreamTagsForDisplay(acc));
+          if (!userHasScrolledUpRef.current) scrollToBottom(false, true);
+        });
+        if (!data || typeof data.text !== 'string') {
+          data = { ...(data || {}), text: acc };
+        }
+      } else {
+        data = contentType.includes("application/json") ? await response.json().catch(() => ({})) : {};
+      }
       const timeString = isAr 
         ? new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
         : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
@@ -1511,6 +1582,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       console.error(error);
     } finally {
       setIsLoading(false);
+      setStreamText(''); // [TASK 49] تنظيف النص المتدفق
     }
   };
 
@@ -2212,7 +2284,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           </div>
         )}
 
-        {messages.map((msg, mi) => (
+        {messages.map((msg) => (
           <div key={msg.id} className={`flex flex-col w-full group ${msg.isUser ? 'items-start' : 'items-end'}`}>
             <div className={`flex items-start gap-3 w-full md:max-w-[90%] ${msg.isUser ? 'flex-row-reverse self-start' : 'flex-row self-end'}`}>
               
@@ -2222,7 +2294,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                 className={`flex-1 min-w-0 transition-all ${
                   msg.isUser 
                     ? 'bg-white/[0.08] backdrop-blur-xl text-gray-100 rounded-2xl px-4 py-3 border border-white/10 max-w-[85%] shadow-md' 
-                    : 'bg-gradient-to-br from-white/[0.055] via-white/[0.03] to-indigo-500/[0.045] backdrop-blur-xl text-gray-100 rounded-2xl px-4 py-3 border border-white/[0.07] shadow-[0_4px_24px_rgba(0,0,0,0.14)]'
+                    : 'bg-transparent text-gray-100 py-1 px-1'
                 }`}
               >
                 {/* Header label for AI response */}
@@ -2799,63 +2871,75 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
             {msg.isUser && (
               <span className="text-[10px] text-white/40 mt-1 mr-2">{msg.time}</span>
             )}
-          {mi < messages.length - 1 && (
-            <div className="msg-sep" aria-hidden="true" />
-          )}
           </div>
         ))}
 
-        {/* [TASK 48] صندوق خطوات الرد الموحّد — لكل الأوضاع ما عدا البحث في
-            الويب (البحث ليه الواجهة الخاصة بيه تحت منفصلة تماماً زي ما هي). */}
+        {/* [TASK 49] الحالة الحقيقية بأسلوب ChatGPT: سطر هادي واحد (بدون أي
+            صندوق) بيوضح الشغل الفعلي اللي حاصل على السيرفر دلوقتي + الوقت
+            الحقيقي المنقضي. وأول ما أول token حقيقي يوصل من السيرفر، النص
+            يظهر مكانه وهو بيتكتب live حرف بحرف. مفيش أي خطوات مؤدّعة — و
+            البحث في الويب ليه واجهته الخاصة تحت منفصلة تماماً زي ما هي. */}
         {isLoading && selectedMode !== 'web_search' && (() => {
-          const lastUser = [...messages].reverse().find(m => m.isUser);
-          const ft: string = (lastUser as any)?.fileType || '';
-          const attachKind = ft.startsWith('audio/') ? 'audio' : ft.startsWith('image/') ? 'image' : (ft ? 'doc' : null);
-          const prepDone = elapsedMs > 900;
-          const attachDone = prepDone && elapsedMs > 3200;
-          // الخطوة الأساسية حسب وضع الطلب (كل ميزة = خطوة منفصلة)
-          const coreByMode: Record<string, { icon: any; label: string; sub: string }> = {
-            fast: { icon: 'write', label: 'كتابة الرد وصياغته', sub: 'صياغة واضحة ومنظمة بأسلوب THOTH' },
-            thinking: { icon: 'think', label: 'تفكير عميق وتحليل المسألة', sub: 'تفكيك خطوة بخطوة وتدقيق البراهين' },
-            learn: { icon: 'learn', label: 'إعداد الدرس والخطة التعليمية', sub: 'شرح وتفاعل ومهام متدرجة' },
-            agent: { icon: 'agent', label: 'الوكيل يبني المنتج كامل', sub: 'بناء كامل — ممكن ياخد من دقيقة لتلات دقايق' },
-            image: { icon: 'image', label: 'رسم وتوليد الصورة', sub: 'هندسة الإضاءة والأبعاد وتناسق الألوان' },
-            audio_summary: { icon: 'audio', label: 'هندسة البودكاست الصوتي', sub: 'تحليل المحتوى وتوليد نبرة طبيعية' },
+          // تسمية صادقة لكل وضع = الشغل الفعلي اللي بيحصل في الباك إند في نفس اللحظة
+          const realStatusByMode: Record<string, string> = {
+            fast: isAr ? 'بيكتب الرد…' : 'Writing the reply…',
+            thinking: isAr ? 'بيفكر بعمق…' : 'Thinking deeply…',
+            learn: isAr ? 'بيجهّز درسك…' : 'Preparing your lesson…',
+            agent: isAr ? 'الوكيل بينفذ مهمتك…' : 'Agent is working…',
+            image: isAr ? 'بيرسم الصورة…' : 'Creating the image…',
+            audio_summary: isAr ? 'بجهّز الملخص الصوتي…' : 'Preparing the audio summary…',
           };
-          const core = coreByMode[selectedMode] || coreByMode.fast;
-          const steps: ResponseStep[] = [];
-          steps.push({ key: 'prep', icon: 'sparkle', label: isAr ? 'تحضير الطلب وفهم المطلوب' : 'Preparing your request', status: prepDone ? 'done' : 'active' });
-          if (attachKind) {
-            const attachLabel = attachKind === 'audio'
-              ? 'تحليل وتلخيص الملف الصوتي'
-              : attachKind === 'image'
-                ? 'قراءة وتحليل الصورة المرفقة'
-                : 'قراءة وتحليل الملف المرفق';
-            steps.push({
-              key: 'attach',
-              icon: attachKind === 'audio' ? 'audio' : attachKind === 'image' ? 'image' : 'file',
-              label: isAr ? attachLabel : 'Analyzing attachment',
-              status: attachDone ? 'done' : 'active',
-            });
-          }
-          steps.push({
-            key: 'core',
-            icon: core.icon,
-            label: isAr ? core.label : 'Generating response',
-            sub: isAr ? core.sub : undefined,
-            status: attachKind ? (attachDone ? 'active' : 'pending') : (prepDone ? 'active' : 'pending'),
-          });
-          steps.push({ key: 'format', icon: 'enhance', label: isAr ? 'تنسيق الرد وعرضه' : 'Formatting the reply', status: 'pending' });
+          const realStatus = realStatusByMode[selectedMode] || (isAr ? 'بيكتب الرد…' : 'Writing the reply…');
+          const elapsedSec = Math.floor(elapsedMs / 1000);
+          // صيغة الوقت الحقيقي: ثواني تحت الدقيقة، دقيقة:ثانية فوقها (الاتجاه LTR عشان الأرقام)
+          const elapsedLabel = elapsedSec < 60
+            ? `${elapsedSec} ث`
+            : `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, '0')} د`;
+          const displayStreamText = stripStreamTagsForDisplay(streamText);
           return (
             <div className="flex flex-col w-full items-end">
               <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
-                <ResponseSteps steps={steps} elapsedMs={elapsedMs} title={isAr ? 'THOTH بيشتغل على طلبك' : 'THOTH is working on your request'} />
+                <div className="flex-1 min-w-0 py-1 px-1">
+                  {displayStreamText ? (
+                    <div className="thoth-stream-live markdown-body text-sm leading-relaxed text-gray-100 space-y-2">
+                      <ReactMarkdown
+                        components={{
+                          p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
+                          strong: ({ children }) => <strong className="font-bold text-white">{children}</strong>,
+                          code({ inline, className, children, ...props }: any) {
+                            if (inline) {
+                              return (
+                                <code className={`bg-white/15 ${theme.textAccentBright} px-1.5 py-0.5 rounded text-xs font-mono`} dir="ltr" {...props}>
+                                  {children}
+                                </code>
+                              );
+                            }
+                            return (
+                              <pre className="p-3 bg-black/40 rounded-xl text-xs font-mono overflow-x-auto my-2 text-indigo-300">
+                                <code>{children}</code>
+                              </pre>
+                            );
+                          }
+                        }}
+                      >
+                        {displayStreamText}
+                      </ReactMarkdown>
+                      <span className="thoth-stream-caret" aria-hidden="true" />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2.5 py-1.5">
+                      <span className="thoth-status-dot" aria-hidden="true" />
+                      <span className="text-sm text-white/55 font-medium animate-fade-in">{realStatus}</span>
+                      <span className="text-[11px] text-white/30 tabular-nums" dir="ltr">· {elapsedLabel}</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           );
         })()}
 
-        {isLoading && selectedMode === 'web_search' && (
+        {isLoading && (
           <div className="flex flex-col w-full items-end">
             <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
               <div className="py-3.5 px-4.5 rounded-2xl bg-white/[0.04] backdrop-blur-xl border border-white/10 flex flex-col gap-2.5 text-white shadow-2xl animate-fade-in min-w-[280px] sm:min-w-[340px]">
