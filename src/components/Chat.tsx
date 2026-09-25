@@ -231,8 +231,8 @@ function CollapsibleCodeBlock({ codeString, lang, isAr, theme, children }: { cod
 // يفتح ويوريك الكود الحقيقي وهو بيتكتب live (بيثبّت لوحده على آخر سطر).
 // أول ما الكود يخلص السطر يهدى لاسم اللغة + زرار النسخ ويفضل مطويّ، ولما
 // الرد يكتمل يترندر البلوك النهائي المعتاد (مفتوح، سهم + لغة + نسخ).
-function StreamingCodeBlock({ codeString, lang, isAr, theme, writing }: { codeString: string; lang?: string; isAr: boolean; theme: any; writing: boolean }) {
-  const [open, setOpen] = useState(false);
+function StreamingCodeBlock({ codeString, lang, isAr, theme, writing, blockIdx, openKey, onToggleKey }: { codeString: string; lang?: string; isAr: boolean; theme: any; writing: boolean; blockIdx: number; openKey: number | null; onToggleKey: (k: number) => void }) {
+  const open = openKey === blockIdx;
   const [copied, setCopied] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
   // auto-pin: والمشاهدة مفتوحة والكود لسه بيتكتب -> ثبّت على آخر سطر
@@ -252,7 +252,7 @@ function StreamingCodeBlock({ codeString, lang, isAr, theme, writing }: { codeSt
         <div className="flex items-center gap-2 min-w-0">
           <button
             type="button"
-            onClick={() => setOpen(o => !o)}
+            onClick={() => onToggleKey(blockIdx)}
             aria-expanded={open}
             title={open ? (isAr ? 'طي الكود' : 'Collapse code') : (isAr ? 'شوف الكود بيتكتب' : 'Watch it being written')}
             className="p-0.5 rounded hover:bg-white/10 hover:text-white transition-colors"
@@ -352,6 +352,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
   // [TASK 52] النشاط الحقيقي المبثوث من السيرفر (بحث في الويب / تحليل ملف)
   const [streamActivity, setStreamActivity] = useState<any>(null);
   const [activityOpen, setActivityOpen] = useState(false);
+  // [TASK 53] فتح/طي بلوك «بيكتب الكود» أثناء البث — الحالة عايشة على مستوى
+  // Chat مش جوّه المكوّن لأن ReactMarkdown بيعيد تركيبه مع كل دلتا وبيمسح
+  // أي useState داخلي. مفتاح لكل بلوك عشان تعدد البلوكات في نفس الرد.
+  const [streamCodeOpenKey, setStreamCodeOpenKey] = useState<number | null>(null);
   const activityUserToggledRef = useRef(false);
   const streamActivityRef = useRef<any>(null);
   const pendingFileRef = useRef<{ name: string; type?: string } | null>(null);
@@ -1546,7 +1550,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
     // [TASK 52] تسمية صادقة أثناء تحليل المرفق: السطر بيقول بياخد الملف
     // ويحلله فعلاً على السيرفر قبل أول token
     pendingFileRef.current = attachedFile ? { name: attachedFile.name, type: attachedFile.type } : null;
-    streamActivityRef.current = null; setStreamActivity(null); setActivityOpen(false); activityUserToggledRef.current = false;
+    streamActivityRef.current = null; setStreamActivity(null); setActivityOpen(false); activityUserToggledRef.current = false; setStreamCodeOpenKey(null); // [TASK 53] طي بلوك الكود
     setIsLoading(true);
     userHasScrolledUpRef.current = false;
     scrollToBottom(true, true);
@@ -1813,7 +1817,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       setStreamText(''); // [TASK 49] تنظيف النص المتدفق في كل الحالات (نجاح/خطأ)
       // [TASK 51] تصفير حالة التفكير والكاتب الناعم للرسالة الجاية
       setStreamThought(''); setShownText(''); setShownThought('');
-      setStreamActivity(null); setActivityOpen(false); streamActivityRef.current = null; pendingFileRef.current = null; activityUserToggledRef.current = false; // [TASK 52] تصفير النشاط
+      setStreamActivity(null); setActivityOpen(false); streamActivityRef.current = null; pendingFileRef.current = null; activityUserToggledRef.current = false; setStreamCodeOpenKey(null); // [TASK 52/53] تصفير النشاط وبلوك الكود
       setThinkSec(null); setThoughtOpen(false);
       thoughtUserToggledRef.current = false;
       thinkDoneMsRef.current = null;
@@ -1964,7 +1968,7 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       setStreamText(''); // [TASK 49] تنظيف النص المتدفق
       // [TASK 51] تصفير حالة التفكير والكاتب الناعم للرسالة الجاية
       setStreamThought(''); setShownText(''); setShownThought('');
-      setStreamActivity(null); setActivityOpen(false); streamActivityRef.current = null; pendingFileRef.current = null; activityUserToggledRef.current = false; // [TASK 52] تصفير النشاط
+      setStreamActivity(null); setActivityOpen(false); streamActivityRef.current = null; pendingFileRef.current = null; activityUserToggledRef.current = false; setStreamCodeOpenKey(null); // [TASK 52/53] تصفير النشاط وبلوك الكود
       setThinkSec(null); setThoughtOpen(false);
       thoughtUserToggledRef.current = false;
       thinkDoneMsRef.current = null;
@@ -3428,10 +3432,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                                 // [TASK 53] أثناء البث الكود مش بيتكتب «في الوش»:
                                 // بلوك مطويّ بأسلوب ChatGPT — «بيكتب الكود…» بلمعة
                                 // والسهم بيفتح على الكود الحقيقي وهو بيتدفق live.
-                                codeSeen += 1;
-                                const isWriting = fenceOpenNow && codeSeen === totalFenced;
+                                const mine = ++codeSeen;
+                                const isWriting = fenceOpenNow && mine === totalFenced;
                                 return (
-                                  <StreamingCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme} writing={isWriting} />
+                                  <StreamingCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme} writing={isWriting} blockIdx={mine} openKey={streamCodeOpenKey} onToggleKey={(k) => setStreamCodeOpenKey(cur => cur === k ? null : k)} />
                                 );
                               }
                             }}
