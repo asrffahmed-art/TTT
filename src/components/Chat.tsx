@@ -226,6 +226,76 @@ function CollapsibleCodeBlock({ codeString, lang, isAr, theme, children }: { cod
   );
 }
 
+// [TASK 53] بلوك الكود أثناء البث بأسلوب ChatGPT بالظبط: بدل ما الكود يتكتب
+// «في الوش»، بيظهر كسطر نشاط مطويّ — «بيكتب الكود…» بلمعة + سهم. تدوس عليه
+// يفتح ويوريك الكود الحقيقي وهو بيتكتب live (بيثبّت لوحده على آخر سطر).
+// أول ما الكود يخلص السطر يهدى لاسم اللغة + زرار النسخ ويفضل مطويّ، ولما
+// الرد يكتمل يترندر البلوك النهائي المعتاد (مفتوح، سهم + لغة + نسخ).
+function StreamingCodeBlock({ codeString, lang, isAr, theme, writing }: { codeString: string; lang?: string; isAr: boolean; theme: any; writing: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const preRef = useRef<HTMLPreElement>(null);
+  // auto-pin: والمشاهدة مفتوحة والكود لسه بيتكتب -> ثبّت على آخر سطر
+  useEffect(() => {
+    if (writing && open && preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight;
+  }, [codeString, writing, open]);
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(codeString || '');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+  return (
+    <div className="my-3 rounded-xl overflow-hidden border border-white/15 bg-black/30 backdrop-blur-md shadow-xl text-left" dir="ltr">
+      <div className="bg-white/5 backdrop-blur-md px-4 py-1.5 flex items-center justify-between text-xs text-gray-400 border-b border-white/10">
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={() => setOpen(o => !o)}
+            aria-expanded={open}
+            title={open ? (isAr ? 'طي الكود' : 'Collapse code') : (isAr ? 'شوف الكود بيتكتب' : 'Watch it being written')}
+            className="p-0.5 rounded hover:bg-white/10 hover:text-white transition-colors"
+          >
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${open ? '' : '-rotate-90'}`} size={14} strokeWidth={2.5} />
+          </button>
+          {writing ? (
+            <>
+              <span className="thoth-status-shimmer text-[12px] font-semibold">{isAr ? 'بيكتب الكود…' : 'Writing code…'}</span>
+              {lang && <span className="font-mono text-[10px] text-white/35 bg-white/5 px-1.5 py-0.5 rounded truncate" dir="ltr">{lang}</span>}
+            </>
+          ) : (
+            <span className="font-mono text-[11px] text-gray-300 truncate" dir="ltr">{lang || 'code'}</span>
+          )}
+        </div>
+        {!writing && (
+          <button
+            onClick={copyCode}
+            className="flex items-center gap-1 hover:text-white transition-colors text-[11px] bg-white/10 px-2 py-0.5 rounded shrink-0"
+          >
+            {copied ? (
+              <>
+                <CheckCheck className={`w-3 h-3 ${theme.textAccent}`} />
+                <span className={`${theme.textAccent} font-bold`}>{isAr ? 'تم النسخ' : 'Copied'}</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3 h-3" />
+                <span>{isAr ? 'نسخ' : 'Copy'}</span>
+              </>
+            )}
+          </button>
+        )}
+      </div>
+      {open && (
+        <pre ref={preRef} className="p-4 text-xs font-mono overflow-auto max-h-64 text-white/70 leading-relaxed">
+          <code>{codeString}</code>
+        </pre>
+      )}
+    </div>
+  );
+}
+
 export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSelectChatId, onToggleLiveModal, onToggleArtifactModal, onNavigate, isAuthenticated }: ChatProps) {
   const { t, language } = useLanguage();
   const isAr = language === 'ar';
@@ -2836,8 +2906,13 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                             components={{
                               p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
                               strong: ({ children }) => <strong className="font-bold text-white bg-white/10 px-1 rounded">{children}</strong>,
-                              code({ inline, className, children, ...props }: any) {
-                                if (inline) {
+                              code({ node, className, children, ...props }: any) {
+                                const sc = String(children).replace(/\n$/, '');
+                                const lm = /language-(\w+)/.exec(className || '');
+                                // [TASK 53] react-markdown v10 شال خاصية inline —
+                                // الاكتشاف الصحيح: بلوك اللغة عنده language-* والمحتوى متعدد السطور
+                                const isInlineCode = !className?.includes('language-') && !sc.includes('\n');
+                                if (isInlineCode) {
                                   return (
                                     <code className={`bg-white/15 ${theme.textAccentBright} px-1.5 py-0.5 rounded text-xs font-mono`} dir="ltr" {...props}>
                                       {children}
@@ -2845,8 +2920,6 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                                   );
                                 }
                                 // [TASK 52] نفس بلوك ChatGPT (سهم + لغة + نسخ) أثناء البث وفي رسايل الصور
-                                const sc = String(children).replace(/\n$/, '');
-                                const lm = /language-(\w+)/.exec(className || '');
                                 return (
                                   <CollapsibleCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme}>
                                     {children}
@@ -3039,13 +3112,15 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                         li: ({ children }) => <li className="leading-relaxed">{children}</li>,
                         strong: ({ children }) => <strong className="font-bold text-white bg-white/10 px-1 rounded">{children}</strong>,
                         blockquote: ({ children }) => <blockquote className={`border-r-4 ${theme.borderAccent} pr-3 my-2 text-gray-300 italic bg-white/5 py-1 rounded-l`}>{children}</blockquote>,
-                        code({ node, inline, className, children, ...props }: any) {
+                        code({ node, className, children, ...props }: any) {
                           const codeString = String(children).replace(/\n$/, '');
                           const codeKey = `${msg.id}-${codeString.substring(0, 15)}`;
                           const match = /language-(\w+)/.exec(className || '');
                           const lang = match ? match[1] : '';
                           
-                          if (inline) {
+                          // [TASK 53] react-markdown v10 شال خاصية inline — الاكتشاف الصحيح
+                          const isInlineCode = !className?.includes('language-') && !codeString.includes('\n');
+                          if (isInlineCode) {
                             return (
                               <code className={`bg-white/15 ${theme.textAccentBright} px-1.5 py-0.5 rounded text-xs font-mono`} dir="ltr" {...props}>
                                 {children}
@@ -3217,6 +3292,13 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           const hasThought = !!streamThought;
           const hasAnswer = !!displayStreamText;
           const hasActivity = !!streamActivity; // [TASK 52]
+          // [TASK 53] كشف حالة الـ fence من النص المعروض نفسه: عدد علامات ```
+          // الفردي معناه إن الكود لسه بيتكتب دلوقتي — وبالتالي آخر بلوك كود
+          // في العرض هو اللي «تحت الكتابة» وبيترندر مطويّ (مش في الوش).
+          const fenceMatches = displayStreamText.match(/```/g) || [];
+          const fenceOpenNow = fenceMatches.length % 2 === 1;
+          const totalFenced = Math.ceil(fenceMatches.length / 2);
+          let codeSeen = 0;
           return (
             <div className="flex flex-col w-full items-end">
               <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
@@ -3324,21 +3406,26 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                             components={{
                               p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
                               strong: ({ children }) => <strong className="font-bold text-white">{children}</strong>,
-                              code({ inline, className, children, ...props }: any) {
-                                if (inline) {
+                              code({ node, className, children, ...props }: any) {
+                                const sc = String(children).replace(/\n$/, '');
+                                const lm = /language-(\w+)/.exec(className || '');
+                                // [TASK 53] react-markdown v10 شال خاصية inline —
+                                // الاكتشاف الصحيح: بلوك اللغة عنده language-* والمحتوى متعدد السطور
+                                const isInlineCode = !className?.includes('language-') && !sc.includes('\n');
+                                if (isInlineCode) {
                                   return (
                                     <code className={`bg-white/15 ${theme.textAccentBright} px-1.5 py-0.5 rounded text-xs font-mono`} dir="ltr" {...props}>
                                       {children}
                                     </code>
                                   );
                                 }
-                                // [TASK 52] نفس بلوك ChatGPT (سهم + لغة + نسخ) أثناء البث وفي رسايل الصور
-                                const sc = String(children).replace(/\n$/, '');
-                                const lm = /language-(\w+)/.exec(className || '');
+                                // [TASK 53] أثناء البث الكود مش بيتكتب «في الوش»:
+                                // بلوك مطويّ بأسلوب ChatGPT — «بيكتب الكود…» بلمعة
+                                // والسهم بيفتح على الكود الحقيقي وهو بيتدفق live.
+                                codeSeen += 1;
+                                const isWriting = fenceOpenNow && codeSeen === totalFenced;
                                 return (
-                                  <CollapsibleCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme}>
-                                    {children}
-                                  </CollapsibleCodeBlock>
+                                  <StreamingCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme} writing={isWriting} />
                                 );
                               }
                             }}
