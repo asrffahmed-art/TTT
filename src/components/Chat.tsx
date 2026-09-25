@@ -3404,6 +3404,8 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                         <div className="thoth-stream-live markdown-body text-sm leading-relaxed text-gray-100 space-y-2">
                           <ReactMarkdown
                             components={{
+                              // [TASK 53] فكّ الـ <pre> الافتراضي — البلوك المخصص بيعمل pre بتاعه
+                              pre: ({ children }) => <>{children}</>,
                               p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
                               strong: ({ children }) => <strong className="font-bold text-white">{children}</strong>,
                               code({ node, className, children, ...props }: any) {
