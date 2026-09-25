@@ -2927,10 +2927,15 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                       <span className="thoth-stream-caret" aria-hidden="true" />
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2.5 py-1.5">
-                      <span className="thoth-status-dot" aria-hidden="true" />
-                      <span className="text-sm text-white/55 font-medium animate-fade-in">{realStatus}</span>
-                      <span className="text-[11px] text-white/30 tabular-nums" dir="ltr">· {elapsedLabel}</span>
+                    /* [TASK 50] سطر الحالة بأسلوب ChatGPT بالظبط: النص اسم
+                       الإجراء الحقيقي اللي شغال فعلاً على السيرفر دلوقتي،
+                       بلمعة متحركة بتقطعه في اتجاه القراءة العربي
+                       (يمين -> شمال) — من غير نقطة ولا صندوق، وجنبه المؤقت
+                       الحقيقي بخط خفيف جداً. أول ما أول token حقيقي يوصل
+                       السطر بيتبدل بنص live بنفس النعومة. */
+                    <div className="thoth-status-line flex items-center gap-2.5 py-1.5" role="status" aria-live="polite">
+                      <span className="thoth-status-shimmer text-[15px] font-medium">{realStatus}</span>
+                      <span className="text-[11px] text-white/25 tabular-nums" dir="ltr">· {elapsedLabel}</span>
                     </div>
                   )}
                 </div>
@@ -2939,7 +2944,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
           );
         })()}
 
-        {isLoading && (
+        {/* [TASK 50] إصلاح ريجركشن Task 49: البوكس القديم كان اتفتح لكل
+            الأوضاع بالغلط فكان بيظهر كمستطيل زايد تحت سطر الحالة. اتحصر تاني
+            في وضع البحث في الويب بس — الفصل الهيكلي الأصلي زي ما هو. */}
+        {isLoading && selectedMode === 'web_search' && (
           <div className="flex flex-col w-full items-end">
             <div className="flex items-start gap-3 w-full md:max-w-[90%] flex-row">
               <div className="py-3.5 px-4.5 rounded-2xl bg-white/[0.04] backdrop-blur-xl border border-white/10 flex flex-col gap-2.5 text-white shadow-2xl animate-fade-in min-w-[280px] sm:min-w-[340px]">

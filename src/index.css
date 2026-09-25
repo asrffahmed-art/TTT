@@ -121,18 +121,39 @@ body.kb-open .thoth-composer-bar {
   padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
 }
 
-/* ---- Task 49: الحالة الحقيقية بأسلوب ChatGPT (نقطة نابضة + مؤشر كتابة live) ---- */
-.thoth-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 9999px;
-  background: #818cf8;
-  flex-shrink: 0;
-  animation: thothStatusPulse 1.4s ease-in-out infinite;
+/* ---- Task 50: حالة ChatGPT بالظبط — نص بلمعة (shimmer) + انتقالات ناعمة ----
+   اللمعة بتقطع النص في اتجاه القراءة العربي (يمين -> شمال)، وكل الحركات
+   transform/opacity فقط عشان تفضل سلسة 60fps على الموبايل. */
+.thoth-status-shimmer {
+  background: linear-gradient(90deg,
+    rgba(255, 255, 255, 0.30) 0%,
+    rgba(255, 255, 255, 0.30) 38%,
+    rgba(255, 255, 255, 0.95) 50%,
+    rgba(255, 255, 255, 0.30) 62%,
+    rgba(255, 255, 255, 0.30) 100%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: thothShimmerSweep 1.8s linear infinite;
+  will-change: background-position;
 }
-@keyframes thothStatusPulse {
-  0%, 100% { opacity: 0.35; transform: scale(0.8); }
-  50% { opacity: 1; transform: scale(1.05); }
+@keyframes thothShimmerSweep {
+  0% { background-position: 220% 0; }
+  100% { background-position: -220% 0; }
+}
+/* دخول ناعم لسطر الحالة + تبديل ناعم لما أول token حقيقي يوصل من السيرفر */
+.thoth-status-line { animation: thothStatusIn 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.thoth-stream-live { animation: thothStreamIn 0.28s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+@keyframes thothStatusIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes thothStreamIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .thoth-stream-caret {
   display: inline-block;
@@ -148,6 +169,12 @@ body.kb-open .thoth-composer-bar {
   50% { opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .thoth-status-dot { animation: none; opacity: 0.7; }
+  .thoth-status-shimmer {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: rgba(255, 255, 255, 0.55);
+    color: rgba(255, 255, 255, 0.55);
+  }
+  .thoth-status-line, .thoth-stream-live { animation: none; }
   .thoth-stream-caret { animation: none; }
 }
