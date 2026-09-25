@@ -2904,6 +2904,8 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                         <div className="markdown-body text-sm leading-relaxed text-gray-100 space-y-2">
                           <ReactMarkdown
                             components={{
+                              // [TASK 53] فكّ الـ <pre> الافتراضي — البلوك المخصص بيعمل pre بتاعه
+                              pre: ({ children }) => <>{children}</>,
                               p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
                               strong: ({ children }) => <strong className="font-bold text-white bg-white/10 px-1 rounded">{children}</strong>,
                               code({ node, className, children, ...props }: any) {
@@ -3037,6 +3039,8 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                     )}
                     <ReactMarkdown
                       components={{
+                        // [TASK 53] فكّ الـ <pre> الافتراضي — البلوك المخصص بيعمل pre بتاعه
+                        pre: ({ children }) => <>{children}</>,
                         p: ({ children }) => <div className="mb-2 leading-relaxed text-gray-200">{children}</div>,
                         img: ({ src, alt }: any) => {
                           if (!src) return null;
