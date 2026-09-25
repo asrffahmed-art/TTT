@@ -87,7 +87,7 @@ const consumeChatStream = async (response: Response, onDelta: (delta: string) =>
   return finalPayload;
 };
 
-export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSelectedChatUpdate, onNavigate, initialMode, initialSessionId, onModeChange, onStreamingStarted, isSidebarCollapsed, onToggleSidebar }: ChatProps) {
+export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSelectChatId, onToggleLiveModal, onToggleArtifactModal, onNavigate, isAuthenticated }: ChatProps) {
   const { t, language } = useLanguage();
   const isAr = language === 'ar';
   const theme = useAppTheme();
