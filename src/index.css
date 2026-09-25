@@ -141,8 +141,12 @@ body.kb-open .thoth-composer-bar {
   will-change: background-position;
 }
 @keyframes thothShimmerSweep {
-  0% { background-position: 220% 0; }
-  100% { background-position: -220% 0; }
+  /* [TASK 53] المسح جوّه نطاق التغطية (0% -> 100%): مع background-size 220%
+     و no-repeat، المسح لـ ±220% كان بيخرج الخلفية خالص عن حدود النص قرب
+     نهايات الدورة فالكلمة بتختفي تمامًا لحظات (فليكر). النطاق ده بيخلي
+     الشريط اللامع يعدي يمين -> شمال والنص مرئي دايمًا بخط أساس 0.30. */
+  0% { background-position: 0% 0; }
+  100% { background-position: 100% 0; }
 }
 /* دخول ناعم لسطر الحالة + تبديل ناعم لما أول token حقيقي يوصل من السيرفر */
 .thoth-status-line { animation: thothStatusIn 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
