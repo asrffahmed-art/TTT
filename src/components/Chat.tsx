@@ -4,6 +4,7 @@ import { useLanguage } from '../lib/LanguageContext';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
+import { DocumentCard } from './DocumentCard';
 import { doc, setDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, db, handleFirestoreError, OperationType, cleanObject, uploadMediaToCloudStorage } from '../lib/firebase';
@@ -390,6 +391,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
       // وضغطات السهم بتوصل فعلًا.
       const mine = ++codeSeenRef.current;
       const isWriting = ctx.fenceOpenNow && mine === ctx.totalFenced;
+      // [TASK 57] بلوك thothdoc = مستند حقيقي مش كود: كارت ملف بتحميل Word/PDF
+      if (lm && lm[1] === 'thothdoc') {
+        return <DocumentCard raw={sc} writing={isWriting} isAr={ctx.isAr} />;
+      }
       return (
         <StreamingCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={ctx.isAr} theme={ctx.theme} writing={isWriting} blockIdx={mine} openKey={ctx.openKey} onToggleKey={ctx.toggle} />
       );
@@ -2997,6 +3002,10 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                                     </code>
                                   );
                                 }
+                                // [TASK 57] بلوك thothdoc = كارت مستند (رسايل الصور)
+                                if (lm && lm[1] === 'thothdoc') {
+                                  return <DocumentCard raw={sc} writing={false} isAr={isAr} />;
+                                }
                                 // [TASK 52] نفس بلوك ChatGPT (سهم + لغة + نسخ) أثناء البث وفي رسايل الصور
                                 return (
                                   <CollapsibleCodeBlock codeString={sc} lang={lm ? lm[1] : ''} isAr={isAr} theme={theme}>
@@ -3206,6 +3215,11 @@ export function Chat({ initialMessage, clearInitialMessage, activeChatId, onSele
                                 {children}
                               </code>
                             );
+                          }
+
+                          // [TASK 57] بلوك thothdoc = كارت مستند حقيقي (الرسايل النهائية)
+                          if (lang === 'thothdoc') {
+                            return <DocumentCard raw={codeString} writing={false} isAr={isAr} />;
                           }
 
                           const isArtifactCandidate = (
